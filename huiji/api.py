@@ -8,7 +8,7 @@ from pathlib import Path
 
 import webview
 
-from . import __version__, config, notes, recorder, transcribe
+from . import __version__, config, notes, recorder, screen, transcribe
 from .jobs import Jobs
 from .store import Store
 
@@ -19,6 +19,7 @@ class Api:
         self._store = Store(self._settings.meetings_dir, self._settings.trash_dir)
         self._jobs = Jobs(self._store, lambda: self._settings)
         self._recorder: recorder.Recorder | None = None
+        self._screen: screen.ScreenRecorder | None = None
         self._recording_id: str | None = None
         self._window = None
         for mid in self._store.recover():
@@ -35,7 +36,9 @@ class Api:
         rec = None
         if self._recorder:
             rec = {"id": self._recording_id, "elapsed": self._recorder.elapsed(),
-                   "paused": self._recorder.paused, "levels": self._recorder.levels()}
+                   "paused": self._recorder.paused, "levels": self._recorder.levels(),
+                   "screen": bool(self._screen),
+                   "screen_ok": not self._screen or self._recorder.paused or self._screen.running()}
         return {"recording": rec, "job": self._jobs.current}
 
     # ---- 會議列表 ----
@@ -50,12 +53,21 @@ class Api:
         return meetings
 
     def get_meeting(self, mid: str) -> dict:
+        video = self._video_file(mid)
         return {
             "meeting": self._store.load(mid),
             "transcript": self._store.read_json(mid, "transcript.json"),
             "notes": self._store.read_json(mid, "notes.json"),
             "has_audio": (self._store.folder(mid) / "audio.m4a").exists(),
+            "video": video.name if video else None,
         }
+
+    def _video_file(self, mid: str) -> Path | None:
+        """可以在介面播放的影片：自己錄的 recording.mp4，或匯入的 mp4／mov／webm"""
+        folder = self._store.folder(mid)
+        if (folder / "recording.mp4").exists():
+            return folder / "recording.mp4"
+        return next((p for p in folder.glob("source.*") if p.suffix in (".mp4", ".m4v", ".mov", ".webm")), None)
 
     def update_meeting(self, mid: str, fields: dict) -> dict:
         allowed = {k: v for k, v in fields.items() if k in ("title", "template", "user_notes", "speakers")}
@@ -76,26 +88,42 @@ class Api:
         return [{"id": k, "name": v["name"], "description": v["description"]} for k, v in notes.TEMPLATES.items()]
 
     # ---- 錄音 ----
-    def start_recording(self, mode: str = "both") -> dict:
+    def start_recording(self, mode: str = "both", record_screen: bool = False) -> dict:
         if self._recorder:
             raise RuntimeError("已經在錄音了")
+        s = self._settings
         meeting = self._store.create(mode=mode)
-        rec = recorder.Recorder(self._store.folder(meeting["id"]), mode,
-                                self._settings.mic_device, self._settings.loopback_device)
+        folder = self._store.folder(meeting["id"])
+        rec = recorder.Recorder(folder, mode, s.mic_device, s.loopback_device)
+        scr = None
         try:
+            if record_screen:
+                scr = screen.ScreenRecorder(s.ffmpeg_exe, folder, s.screen_monitor, s.screen_fps)
             rec.start()
+            if scr:
+                scr.start_segment(rec.elapsed())
         except Exception:
-            shutil.rmtree(self._store.folder(meeting["id"]), ignore_errors=True)
+            if rec.started_at:
+                rec.stop()
+            shutil.rmtree(folder, ignore_errors=True)
             raise
-        self._recorder, self._recording_id = rec, meeting["id"]
+        self._recorder, self._screen, self._recording_id = rec, scr, meeting["id"]
+        if scr:
+            meeting = self._store.update(meeting["id"], video_segments=scr.segments)
         return meeting
 
     def pause_recording(self) -> None:
         if self._recorder:
             self._recorder.pause()
+            if self._screen:
+                self._screen.stop_segment(self._recorder.elapsed())
+                self._store.update(self._recording_id, video_segments=self._screen.segments)
 
     def resume_recording(self) -> None:
         if self._recorder:
+            if self._screen:
+                self._screen.start_segment(self._recorder.elapsed())
+                self._store.update(self._recording_id, video_segments=self._screen.segments)
             self._recorder.resume()
 
     def add_bookmark(self, label: str = "") -> float:
@@ -109,8 +137,12 @@ class Api:
     def stop_recording(self, process: bool = True) -> str | None:
         if not self._recorder:
             return None
-        rec, mid = self._recorder, self._recording_id
-        self._recorder, self._recording_id = None, None
+        rec, scr, mid = self._recorder, self._screen, self._recording_id
+        self._recorder, self._screen, self._recording_id = None, None, None
+        if scr:
+            if not rec.paused:
+                scr.stop_segment(rec.elapsed())
+            self._store.update(mid, video_segments=scr.segments)
         duration = rec.stop()
         self._store.update(mid, status="recorded", duration=duration)
         if process:
@@ -152,14 +184,16 @@ class Api:
         data = self.get_meeting(mid)
         m, segs = data["meeting"], data["transcript"] or []
         safe = "".join(c for c in m["title"] if c not in '\\/:*?"<>|').strip() or mid
-        if kind == "audio":
-            src = self._store.folder(mid) / "audio.m4a"
-            target = self._save_dialog(f"{safe}.m4a")
+        if kind in ("audio", "video"):
+            src = self._store.folder(mid) / "audio.m4a" if kind == "audio" else self._video_file(mid)
+            target = self._save_dialog(f"{safe}{src.suffix}")
             if target:
                 shutil.copy2(src, target)
             return target
-        if kind == "srt":
-            content, name = transcribe.to_srt(segs, m["speakers"]), f"{safe}.srt"
+        if kind in ("srt", "srt_plain"):
+            subs = transcribe.subtitle_segments(self._settings, self._store.folder(mid), segs)
+            content = transcribe.to_srt(subs, m["speakers"], with_speaker=kind == "srt")
+            name = f"{safe}.srt"
         elif kind == "transcript":
             content, name = notes.to_markdown(m, None, segs, True), f"{safe} 逐字稿.md"
         else:
@@ -201,6 +235,7 @@ class Api:
     # ---- 設定 ----
     def get_settings(self) -> dict:
         return {"settings": asdict(self._settings), "devices": recorder.list_devices(), "version": __version__,
+                "monitors": screen.list_monitors(),
                 "backends": notes.available_backends()}
 
     def save_settings(self, data: dict) -> dict:

@@ -27,6 +27,8 @@ class Settings:
     llm_model: str = ""
     mic_device: int = -1  # -1 = 系統預設
     loopback_device: int = -1  # -1 = 預設喇叭的 loopback
+    screen_monitor: int = 0  # 依 screen.list_monitors() 的順序，0 = 主螢幕
+    screen_fps: int = 15
     glossary: list = field(default_factory=list)
 
     @property

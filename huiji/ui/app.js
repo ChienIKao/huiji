@@ -48,17 +48,20 @@ async function call(name, ...args) {
 const S = {
   meetings: [],
   selected: null,
-  data: null,      // {meeting, transcript, notes, has_audio}
+  data: null,      // {meeting, transcript, notes, has_audio, video}
   tab: "summary",
   query: "",
   recording: null, // {id, elapsed, paused, levels}
   recMode: localStorage.getItem("recMode") || "both",
+  recScreen: localStorage.getItem("recScreen") === "1",
+  showVideo: localStorage.getItem("showVideo") !== "0",
   editing: false,
   trFilter: "",
   trSpeaker: "",
   templates: [],
 };
 const BUSY = ["queued", "transcribing", "summarizing"];
+const hasMedia = () => !!(S.data && (S.data.has_audio || S.data.video));
 
 // ---------- 會議列表 ----------
 async function loadList() {
@@ -136,7 +139,10 @@ function renderDetail(changed) {
   $("#tabs").classList.toggle("hidden", isRec);
   $("#recPanel").classList.toggle("hidden", !isRec);
   $("#content").classList.toggle("hidden", isRec);
-  $("#player").classList.toggle("hidden", isRec || !S.data.has_audio);
+  $("#player").classList.toggle("hidden", isRec || !hasMedia());
+  $("#videoToggle").classList.toggle("hidden", !S.data.video);
+  $("#videoToggle").classList.toggle("on", S.showVideo);
+  $("#videoPane").classList.toggle("hidden", isRec || !S.data.video || !S.showVideo);
   if (isRec) { renderRecPanel(changed); return; }
 
   const review = S.data.notes?.reviewItems?.length || 0;
@@ -423,7 +429,9 @@ $("#moreBtn").addEventListener("click", (e) => {
     <button data-m="export-notes">匯出會議紀錄（.md）</button>
     <button data-m="export-all">匯出紀錄＋逐字稿（.md）</button>
     <button data-m="export-transcript">匯出逐字稿（.md）</button>
-    <button data-m="export-srt">匯出字幕（.srt）</button>
+    <button data-m="export-srt">匯出字幕（.srt，含說話者）</button>
+    <button data-m="export-srt_plain">匯出字幕（.srt，YouTube 用）</button>
+    ${S.data?.video ? `<button data-m="export-video">匯出影片（${S.data.video.split(".").pop()}）</button>` : ""}
     <button data-m="export-audio">匯出音檔（.m4a）</button>
     <button data-m="copy-all">複製紀錄＋逐字稿</button>
     <hr>
@@ -441,7 +449,7 @@ $("#moreMenu").addEventListener("click", async (e) => {
   const id = S.selected;
   $("#moreMenu").classList.add("hidden");
   if (m.startsWith("export-")) {
-    const kind = { "export-notes": "notes", "export-all": "all", "export-transcript": "transcript", "export-srt": "srt", "export-audio": "audio" }[m];
+    const kind = m.slice("export-".length);
     const path = await call("export", id, kind);
     if (path) toast(`已匯出：${path}`);
   } else if (m === "copy-all") {
@@ -465,8 +473,8 @@ $("#moreMenu").addEventListener("click", async (e) => {
 // ---------- 播放器 ----------
 const audio = $("#audio");
 function setupPlayer() {
-  if (!S.data.has_audio) { audio.removeAttribute("src"); return; }
-  audio.src = `/media/${S.selected}/audio.m4a`;
+  if (!hasMedia()) { audio.removeAttribute("src"); return; }
+  audio.src = `/media/${S.selected}/${S.data.video || "audio.m4a"}`;
   audio.playbackRate = +$("#rateSel").value;
   $("#trackFill").style.width = "0";
   $("#curTime").textContent = "00:00";
@@ -478,7 +486,7 @@ function renderMarks() {
     .map((b) => `<i style="left:${(b.time / dur) * 100}%"></i>`).join("") : "";
 }
 function seek(sec, play) {
-  if (!S.data?.has_audio) return;
+  if (!hasMedia()) return;
   audio.currentTime = sec;
   if (play) audio.play();
 }
@@ -498,6 +506,11 @@ $("#track").addEventListener("click", (e) => {
   if (d) seek(((e.clientX - r.left) / r.width) * d, false);
 });
 $("#rateSel").addEventListener("change", (e) => { audio.playbackRate = +e.target.value; });
+$("#videoToggle").addEventListener("click", () => {
+  S.showVideo = !S.showVideo;
+  localStorage.setItem("showVideo", S.showVideo ? "1" : "0");
+  renderDetail(false);
+});
 
 let lastNow = -1;
 function highlightNow(force) {
@@ -523,14 +536,20 @@ $("#recBtn").addEventListener("click", startRecording);
 $("#emptyRec").addEventListener("click", startRecording);
 $("#recModeBtn").addEventListener("click", (e) => {
   e.stopPropagation();
-  popMenu(e.currentTarget, Object.entries(MODES).map(([k, v]) => ({ label: (S.recMode === k ? "✓ " : "　") + v, fn: () => {
+  const items = Object.entries(MODES).map(([k, v]) => ({ label: (S.recMode === k ? "✓ " : "　") + v, fn: () => {
     S.recMode = k; localStorage.setItem("recMode", k); toast(`錄音來源：${v}`);
-  } })));
+  } }));
+  items.push({ sep: true }, { label: (S.recScreen ? "✓ " : "　") + "同時錄製螢幕", fn: () => {
+    S.recScreen = !S.recScreen; localStorage.setItem("recScreen", S.recScreen ? "1" : "0");
+    toast(S.recScreen ? "錄音時會同時錄製螢幕（在設定中選擇要錄哪個螢幕）" : "只錄聲音");
+    updateRecTooltip();
+  } });
+  popMenu(e.currentTarget, items);
 });
 
 async function startRecording() {
   if (S.recording) return;
-  const m = await call("start_recording", S.recMode);
+  const m = await call("start_recording", S.recMode, S.recScreen);
   S.recording = { id: m.id, elapsed: 0, paused: false, levels: {} };
   recNotesLoaded = null;
   $("#recGroup").classList.add("hidden");
@@ -590,9 +609,18 @@ function renderRecMarks() {
     ? marks.map((b) => `<li><span class="ico star"></span><span class="ts" style="padding:0">${fmt(b.time)}</span></li>`).join("")
     : `<li class="muted">還沒有標記</li>`;
 }
+function updateRecTooltip() {
+  $("#recBtn").title = `開始錄音${S.recScreen ? "＋螢幕" : ""}（Ctrl+Shift+R）`;
+}
+updateRecTooltip();
+
 function updateRecUI() {
   const r = S.recording;
   if (!r) return;
+  const badge = $("#screenBadge");
+  badge.classList.toggle("hidden", !r.screen);
+  badge.classList.toggle("bad", r.screen && !r.screen_ok);
+  badge.textContent = r.screen && !r.screen_ok ? "螢幕錄影中斷" : r.paused ? "螢幕錄影已暫停" : "螢幕錄影中";
   const t = fmt(r.elapsed);
   $("#sideTimer").textContent = t;
   $("#recLive").classList.toggle("paused", r.paused);
@@ -663,7 +691,8 @@ async function poll() {
           if (wasBusy && S.data.meeting.status === "done" && S.data.notes && S.tab === "transcript" && !audio.currentTime) S.tab = "summary";
           if (document.activeElement?.closest?.("#content") && S.tab !== "transcript") renderMeta();
           else renderDetail(false);
-          if (!audio.src && S.data.has_audio) setupPlayer();
+          const want = S.data.video || (S.data.has_audio ? "audio.m4a" : "");
+          if (want && !audio.src.endsWith("/" + want)) setupPlayer();
         }
       }
     }
@@ -699,7 +728,7 @@ $("#trashBtn").addEventListener("click", async () => {
 // ---------- 設定 ----------
 $("#settingsBtn").addEventListener("click", openSettings);
 async function openSettings() {
-  const { settings: s, devices, backends, version } = await api.get_settings();
+  const { settings: s, devices, backends, version, monitors } = await api.get_settings();
   const opt = (list, cur, def) => `<option value="-1">${def}</option>` + list.map((d) => `<option value="${d.index}" ${d.index === cur ? "selected" : ""}>${esc(d.name)}</option>`).join("");
   openModal(`<h3>設定 <small class="muted" style="font-weight:400;font-size:13px">v${esc(version)}</small></h3>
     <div class="row"><label class="lbl">AI 整理</label>
@@ -717,6 +746,12 @@ async function openSettings() {
       <div class="help">轉錄時當作提示，AI 整理時也會依這裡的寫法校正。</div></div>
     <div class="row"><label class="lbl">麥克風</label><select id="sMic">${opt(devices.mics, s.mic_device, "系統預設")}</select></div>
     <div class="row"><label class="lbl">電腦聲音來源</label><select id="sLoop">${opt(devices.loopbacks, s.loopback_device, "預設喇叭")}</select></div>
+    <div class="row inline">
+      <div><label class="lbl">螢幕錄影：要錄的螢幕</label><select id="sMonitor">${monitors.map((m) =>
+        `<option value="${m.index}" ${m.index === s.screen_monitor ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select></div>
+      <div><label class="lbl">影格率</label><select id="sFps">${[10, 15, 30].map((f) =>
+        `<option value="${f}" ${f === s.screen_fps ? "selected" : ""}>${f} fps${f === 15 ? "（建議）" : ""}</option>`).join("")}</select></div>
+    </div>
     <div class="row"><label class="lbl">Faster-Whisper-XXL 位置</label><input type="text" id="sWhisper" value="${esc(s.whisper_exe)}"></div>
     <div class="row inline">
       <div><label class="lbl">模型</label><input type="text" id="sModel" value="${esc(s.whisper_model)}"></div>
@@ -736,6 +771,7 @@ async function openSettings() {
       llm_backend: $("#sBackend").value, llm_model: $("#sLlmModel").value.trim(),
       glossary: $("#sGlossary").value.split("\n").map((x) => x.trim()).filter(Boolean),
       mic_device: +$("#sMic").value, loopback_device: +$("#sLoop").value,
+      screen_monitor: +$("#sMonitor").value, screen_fps: +$("#sFps").value,
       whisper_exe: $("#sWhisper").value.trim(), whisper_model: $("#sModel").value.trim(), whisper_language: $("#sLang").value.trim(), multilingual: $("#sMulti").checked,
       diarize: $("#sDiarize").checked, min_speakers: +$("#sMin").value || 0, max_speakers: +$("#sMax").value || 0,
       opencc_exe: $("#sOpencc").value.trim(), data_dir: $("#sData").value.trim(),
@@ -786,6 +822,7 @@ function popMenu(anchor, items) {
   menu.style.left = `${r.left}px`;
   menu.style.top = `${r.bottom + 4}px`;
   items.forEach((it) => {
+    if (it.sep) { menu.appendChild(document.createElement("hr")); return; }
     const b = document.createElement("button");
     b.textContent = it.label;
     b.onclick = () => { menu.remove(); it.fn(); };
@@ -800,7 +837,7 @@ document.addEventListener("keydown", (e) => {
   if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); S.recording ? stopRecording() : startRecording(); }
   else if (e.ctrlKey && e.key.toLowerCase() === "b" && S.recording) { e.preventDefault(); addMark(); }
   else if (e.key === "Escape") closeModal();
-  else if (e.code === "Space" && !e.target.closest("input,textarea,[contenteditable=true],select,button") && S.data?.has_audio && !S.recording) {
+  else if (e.code === "Space" && !e.target.closest("input,textarea,[contenteditable=true],select,button") && hasMedia() && !S.recording) {
     e.preventDefault(); audio.paused ? audio.play() : audio.pause();
   }
 });

@@ -197,6 +197,14 @@ mark { background: color-mix(in srgb, var(--signal) 45%, transparent); color: in
 /* 筆記 */
 .notes-tab textarea { width: 100%; min-height: 320px; resize: vertical; border: 0; border-radius: 10px; background: var(--panel); padding: 14px 16px; outline: none; line-height: 1.6; font-size: 15px; }
 
+/* ---------- 影片 ---------- */
+.video-pane { flex: none; background: #000; display: flex; justify-content: center; border-bottom: 1px solid var(--line); }
+.video-pane video { max-width: 100%; max-height: 42vh; display: block; }
+.btn.small { height: 26px; padding: 0 10px; font-size: 12px; }
+.btn.small.on { background: var(--accent); color: var(--accent-ink); }
+.screen-badge { font-size: 12px; color: var(--accent); border: 1px solid var(--accent); border-radius: 10px; padding: 1px 8px; }
+.screen-badge.bad { color: var(--danger); border-color: var(--danger); }
+
 /* ---------- 播放器 ---------- */
 .player { height: 58px; flex: none; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 14px; padding: 0 24px 0 32px; }
 .player .time { font-variant-numeric: tabular-nums; color: var(--text-2); width: 64px; text-align: center; }

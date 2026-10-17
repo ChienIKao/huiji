@@ -10,7 +10,9 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 UI_DIR = Path(__file__).parent / "ui"
-MEDIA_NAME = re.compile(r"^/media/([\w-]+)/audio\.m4a$")
+MEDIA_NAME = re.compile(r"^/media/([\w-]+)/(audio\.m4a|recording\.mp4|source\.(?:mp4|m4v|mov|webm))$")
+MEDIA_TYPES = {".m4a": "audio/mp4", ".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime",
+               ".webm": "video/webm"}
 
 
 def start(meetings_dir_getter, dev_api=None, port: int = 0) -> int:
@@ -40,7 +42,7 @@ def start(meetings_dir_getter, dev_api=None, port: int = 0) -> int:
             path = unquote(urlparse(self.path).path)
             m = MEDIA_NAME.match(path)
             if m:
-                file = meetings_dir_getter() / m.group(1) / "audio.m4a"
+                file = meetings_dir_getter() / m.group(1) / m.group(2)
             else:
                 file = (UI_DIR / (path.lstrip("/") or "index.html")).resolve()
                 if UI_DIR.resolve() not in file.parents:
@@ -51,7 +53,7 @@ def start(meetings_dir_getter, dev_api=None, port: int = 0) -> int:
 
         def _send_file(self, file: Path):
             size = file.stat().st_size
-            ctype = "audio/mp4" if file.suffix == ".m4a" else (mimetypes.guess_type(file.name)[0] or "application/octet-stream")
+            ctype = MEDIA_TYPES.get(file.suffix) or mimetypes.guess_type(file.name)[0] or "application/octet-stream"
             start, end = 0, size - 1
             rng = re.match(r"bytes=(\d*)-(\d*)", self.headers.get("Range", ""))
             if rng and (rng.group(1) or rng.group(2)):

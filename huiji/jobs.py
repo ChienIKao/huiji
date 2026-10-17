@@ -5,7 +5,7 @@ import queue
 import threading
 import traceback
 
-from . import notes, selfvoice, transcribe
+from . import notes, screen, selfvoice, transcribe
 from .config import Settings
 from .store import Store
 
@@ -58,13 +58,19 @@ class Jobs:
         folder = self.store.folder(mid)
         meeting = self.store.load(mid)
 
+        # 有錄螢幕：先把影片片段和混音後的聲音合成 recording.mp4
+        if meeting.get("video_segments") and not (folder / "recording.mp4").exists():
+            self.store.update(mid, status="transcribing", progress="合成影片…")
+            transcribe.ensure_audio(s, folder)
+            screen.finalize(s.ffmpeg_exe, folder, meeting["video_segments"])
+
         segments = self.store.read_json(mid, "transcript.json")
         if segments is None:
             self.store.update(mid, status="transcribing", progress="準備音檔…")
             duration = meeting.get("duration") or 0
             if not duration:
                 src = folder / "audio.m4a" if (folder / "audio.m4a").exists() else next(folder.glob("source.*"), None)
-                duration = transcribe.probe_duration(s, src) if src else 0
+                duration = transcribe.probe_duration(s.ffmpeg_exe, src) if src else 0
                 self.store.update(mid, duration=duration)
 
             def progress(p: float) -> None:

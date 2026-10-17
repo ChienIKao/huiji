@@ -76,6 +76,7 @@
         <div class="rec-bar">
           <span class="dot"></span><strong id="recState">錄音中</strong>
           <span class="timer" id="recTimer">00:00</span>
+          <span class="screen-badge hidden" id="screenBadge">螢幕錄影中</span>
           <div class="meters">
             <div class="meter-row" id="micMeterRow"><span class="ico mic"></span><div class="meter" id="micMeter"></div></div>
             <div class="meter-row" id="sysMeterRow"><span class="ico speaker"></span><div class="meter" id="sysMeter"></div></div>
@@ -99,6 +100,8 @@
         </div>
       </section>
 
+      <section id="videoPane" class="video-pane hidden"><video id="audio" preload="metadata" playsinline></video></section>
+
       <section id="content" class="content"></section>
 
       <footer id="player" class="player hidden">
@@ -109,11 +112,11 @@
           <div class="track-marks" id="trackMarks"></div>
         </div>
         <span class="time" id="durTime">00:00</span>
+        <button class="btn small hidden" id="videoToggle" title="顯示／隱藏畫面">畫面</button>
         <select id="rateSel" class="rate">
           <option value="0.75">0.75×</option><option value="1" selected>1×</option>
           <option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option>
         </select>
-        <audio id="audio" preload="metadata"></audio>
       </footer>
     </div>
   </main>

@@ -1,0 +1,190 @@
+"""螢幕錄影：ffmpeg gdigrab 擷取指定螢幕，硬體編碼（NVENC／Quick Sync）優先。
+
+暫停時結束目前的片段、繼續時開新的片段（video_000.mkv、video_001.mkv…），
+錄完後依各片段對應的錄音長度串接，再跟混音後的 audio.m4a 合成 recording.mp4。
+片段用 mkv：程式當掉時已寫入的部分還讀得到。
+"""
+from __future__ import annotations
+
+import ctypes
+import ctypes.wintypes as wt
+import subprocess
+import threading
+from pathlib import Path
+
+from .transcribe import NO_WINDOW, probe_duration
+
+_encoder_cache: dict[str, list[str]] = {}
+_encoder_lock = threading.Lock()
+
+ENCODERS = [
+    ("h264_nvenc", ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "30", "-b:v", "0"]),
+    ("h264_qsv", ["-c:v", "h264_qsv", "-preset", "veryfast", "-global_quality", "28"]),
+    ("libx264", ["-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-tune", "stillimage"]),
+]
+
+
+# ---- 會議錄影程式結束時一併結束 ffmpeg ----
+class _JobLimits(ctypes.Structure):
+    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wt.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wt.DWORD),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", wt.DWORD), ("SchedulingClass", wt.DWORD)]
+
+
+class _IoCounters(ctypes.Structure):
+    _fields_ = [(n, ctypes.c_uint64) for n in ("ReadOps", "WriteOps", "OtherOps", "ReadBytes", "WriteBytes", "OtherBytes")]
+
+
+class _ExtendedLimits(ctypes.Structure):
+    _fields_ = [("BasicLimitInformation", _JobLimits), ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+
+_job = None
+
+
+def _kill_with_parent(proc: subprocess.Popen) -> None:
+    """把 ffmpeg 放進 Job Object：會記結束（包括當掉）時，Windows 會自動結束它，不會在背景繼續錄影"""
+    global _job
+    k32 = ctypes.windll.kernel32
+    k32.CreateJobObjectW.restype = wt.HANDLE
+    k32.OpenProcess.restype = wt.HANDLE
+    if _job is None:
+        job = k32.CreateJobObjectW(None, None)
+        info = _ExtendedLimits()
+        info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        k32.SetInformationJobObject(wt.HANDLE(job), 9, ctypes.byref(info), ctypes.sizeof(info))
+        _job = job
+    handle = k32.OpenProcess(0x0101, False, proc.pid)  # PROCESS_SET_QUOTA | PROCESS_TERMINATE
+    if handle:
+        k32.AssignProcessToJobObject(wt.HANDLE(_job), wt.HANDLE(handle))
+        k32.CloseHandle(wt.HANDLE(handle))
+
+
+# ---- 螢幕列表 ----
+class _MonitorInfo(ctypes.Structure):
+    _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", wt.RECT), ("rcWork", wt.RECT),
+                ("dwFlags", wt.DWORD), ("szDevice", wt.WCHAR * 32)]
+
+
+def list_monitors() -> list[dict]:
+    """回傳實際像素座標（不受 Windows 縮放比例影響）的螢幕清單，主螢幕排第一"""
+    user32 = ctypes.windll.user32
+    # 只在這個執行緒暫時切換成 per-monitor DPI aware，才拿得到實際像素
+    old = None
+    try:
+        user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+        old = user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+    except AttributeError:
+        pass
+    monitors: list[dict] = []
+
+    def callback(hmon, _hdc, _rect, _data):
+        info = _MonitorInfo()
+        info.cbSize = ctypes.sizeof(_MonitorInfo)
+        user32.GetMonitorInfoW(hmon, ctypes.byref(info))
+        r = info.rcMonitor
+        monitors.append({"x": r.left, "y": r.top, "width": r.right - r.left, "height": r.bottom - r.top,
+                         "primary": bool(info.dwFlags & 1), "device": info.szDevice})
+        return True
+
+    proc = ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HMONITOR, wt.HDC, ctypes.POINTER(wt.RECT), wt.LPARAM)(callback)
+    user32.EnumDisplayMonitors(None, None, proc, 0)
+    if old:
+        user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(old))
+    monitors.sort(key=lambda m: (not m["primary"], m["x"], m["y"]))
+    for i, m in enumerate(monitors):
+        m["index"] = i
+        m["name"] = f"螢幕 {i + 1}{'（主螢幕）' if m['primary'] else ''}　{m['width']}×{m['height']}"
+    return monitors
+
+
+def pick_encoder(ffmpeg: str) -> list[str]:
+    """試著用小畫面編碼一次，挑第一個能用的編碼器"""
+    with _encoder_lock:
+        if ffmpeg in _encoder_cache:
+            return _encoder_cache[ffmpeg]
+        for _name, args in ENCODERS:
+            r = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                                "-i", "color=s=640x360:d=0.2", *args, "-f", "null", "-"],
+                               capture_output=True, creationflags=NO_WINDOW)
+            if r.returncode == 0:
+                _encoder_cache[ffmpeg] = args
+                return args
+        raise RuntimeError("找不到可用的 H.264 編碼器")
+
+
+# ---- 錄影 ----
+class ScreenRecorder:
+    def __init__(self, ffmpeg: str, folder: Path, monitor: int = 0, fps: int = 15):
+        self.ffmpeg = ffmpeg
+        self.folder = folder
+        monitors = list_monitors()
+        self.monitor = monitors[monitor] if 0 <= monitor < len(monitors) else monitors[0]
+        self.fps = fps
+        self.encoder = pick_encoder(ffmpeg)
+        self.proc: subprocess.Popen | None = None
+        self.segments: list[dict] = []  # [{"file": "video_000.mkv", "duration": 秒}]
+        self._segment_start = 0.0
+
+    def start_segment(self, elapsed: float) -> None:
+        name = f"video_{len(self.segments):03d}.mkv"
+        m = self.monitor
+        args = [self.ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "gdigrab", "-framerate", str(self.fps), "-draw_mouse", "1",
+                "-offset_x", str(m["x"]), "-offset_y", str(m["y"]),
+                "-video_size", f"{m['width']}x{m['height']}", "-i", "desktop",
+                "-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2", *self.encoder, "-pix_fmt", "yuv420p",
+                str(self.folder / name)]
+        with open(self.folder / "video.log", "ab") as log:
+            self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log,
+                                         creationflags=NO_WINDOW)
+        _kill_with_parent(self.proc)
+        self.segments.append({"file": name, "duration": None})
+        self._segment_start = elapsed
+
+    def stop_segment(self, elapsed: float) -> None:
+        if not self.proc:
+            return
+        proc, self.proc = self.proc, None
+        try:
+            proc.communicate(b"q", timeout=15)  # 讓 ffmpeg 正常收尾，檔案才完整
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        self.segments[-1]["duration"] = round(elapsed - self._segment_start, 3)
+
+    def running(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+
+def finalize(ffmpeg: str, folder: Path, segments: list[dict]) -> Path:
+    """把各片段依錄音長度串接，加上 audio.m4a，輸出 recording.mp4（不重新編碼）"""
+    parts = [s for s in segments if (folder / s["file"]).exists() and (folder / s["file"]).stat().st_size > 0]
+    if not parts:
+        raise RuntimeError("找不到錄影片段")
+    lines = []
+    for s in parts:
+        # 片段長度以錄音長度為準：每段誤差不會累積到下一段（當掉時沒有記錄長度，就用影片本身的長度）
+        duration = s.get("duration") or probe_duration(ffmpeg, folder / s["file"])
+        lines += [f"file '{s['file']}'", f"duration {duration:.3f}"]
+    concat = folder / "video_concat.txt"
+    concat.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    out = folder / "recording.mp4"
+    tmp = folder / "recording.tmp.mp4"
+    args = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(concat)]
+    if (folder / "audio.m4a").exists():
+        args += ["-i", str(folder / "audio.m4a"), "-map", "0:v", "-map", "1:a"]
+    args += ["-c", "copy", "-movflags", "+faststart", str(tmp)]
+    r = subprocess.run(args, capture_output=True, creationflags=NO_WINDOW, cwd=str(folder))
+    if r.returncode != 0:
+        raise RuntimeError("合成影片失敗：" + r.stderr.decode("utf-8", "replace")[-400:])
+    tmp.replace(out)
+    concat.unlink(missing_ok=True)
+    for s in parts:
+        (folder / s["file"]).unlink(missing_ok=True)
+    (folder / "video.log").unlink(missing_ok=True)
+    return out
+

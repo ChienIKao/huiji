@@ -26,8 +26,8 @@ def _run(args: list[str], what: str) -> subprocess.CompletedProcess:
     return r
 
 
-def probe_duration(s: Settings, path: Path) -> float:
-    r = subprocess.run([s.ffmpeg_exe, "-hide_banner", "-i", str(path)], capture_output=True, creationflags=NO_WINDOW)
+def probe_duration(ffmpeg: str, path: Path) -> float:
+    r = subprocess.run([ffmpeg, "-hide_banner", "-i", str(path)], capture_output=True, creationflags=NO_WINDOW)
     m = re.search(rb"Duration: (\d+):(\d+):(\d+\.\d+)", r.stderr)
     if not m:
         return 0.0
@@ -35,9 +35,11 @@ def probe_duration(s: Settings, path: Path) -> float:
     return int(h) * 3600 + int(mi) * 60 + float(sec)
 
 
-def prepare_audio(s: Settings, folder: Path) -> Path:
-    """產生播放用的 audio.m4a 和轉錄用的 16 kHz 單聲道 work.wav，回傳 work.wav"""
-    work = folder / "work.wav"
+def ensure_audio(s: Settings, folder: Path) -> Path:
+    """產生播放用的 audio.m4a（麥克風與系統音混音，或從匯入的檔案取出聲音）"""
+    audio = folder / "audio.m4a"
+    if audio.exists():
+        return audio
     tracks = [folder / n for n in ("mic.wav", "system.wav") if (folder / n).exists() and (folder / n).stat().st_size > 44]
     imported = next((p for p in folder.glob("source.*")), None)
     if tracks:
@@ -51,10 +53,15 @@ def prepare_audio(s: Settings, folder: Path) -> Path:
         src = ["-i", str(imported), "-vn"]
     else:
         raise TranscribeError("找不到音檔")
-    audio = folder / "audio.m4a"
-    if not audio.exists():
-        _run([s.ffmpeg_exe, "-y", "-hide_banner", "-loglevel", "error", *src,
-              "-ac", "1", "-c:a", "aac", "-b:a", "96k", str(audio)], "產生音檔")
+    _run([s.ffmpeg_exe, "-y", "-hide_banner", "-loglevel", "error", *src,
+          "-ac", "1", "-c:a", "aac", "-b:a", "96k", str(audio)], "產生音檔")
+    return audio
+
+
+def prepare_audio(s: Settings, folder: Path) -> Path:
+    """回傳轉錄用的 16 kHz 單聲道 work.wav"""
+    work = folder / "work.wav"
+    audio = ensure_audio(s, folder)
     _run([s.ffmpeg_exe, "-y", "-hide_banner", "-loglevel", "error", "-i", str(audio),
           "-ac", "1", "-ar", "16000", str(work)], "轉換音檔")
     return work
@@ -186,10 +193,23 @@ def srt_time(seconds: float) -> str:
     return f"{ms // 3600000:02d}:{ms % 3600000 // 60000:02d}:{ms % 60000 // 1000:02d},{ms % 1000:03d}"
 
 
-def to_srt(segments: list[dict], speakers: dict) -> str:
+def subtitle_segments(s: Settings, folder: Path, fallback: list[dict]) -> list[dict]:
+    """字幕用的短句：Whisper 原本的分句（逐字稿為了好讀會把同一人的句子合併，太長不適合當字幕）"""
+    srt = folder / "whisper" / "work.srt"
+    if not srt.exists():
+        return fallback
+    segments = parse_srt(srt.read_text(encoding="utf-8"))
+    for seg, text in zip(segments, to_traditional(s, [x["text"] for x in segments])):
+        seg["text"] = fix_punctuation(text)
+    return segments
+
+
+def to_srt(segments: list[dict], speakers: dict, with_speaker: bool = True) -> str:
+    from .notes import speaker_name
+
     blocks = []
     for i, seg in enumerate(segments, 1):
-        name = speakers.get(seg["speaker"], seg["speaker"]) if seg["speaker"] else ""
+        name = speaker_name(seg.get("speaker"), speakers) if with_speaker else ""
         text = f"{name}：{seg['text']}" if name else seg["text"]
         blocks.append(f"{i}\n{srt_time(seg['start'])} --> {srt_time(seg['end'])}\n{text}\n")
     return "\n".join(blocks)
