@@ -68,7 +68,7 @@ python -m venv .venv
 .venv\Scripts\python main.py --debug   # 開視窗＋開發者工具
 .venv\Scripts\python main.py --dev     # 不開視窗，用瀏覽器開 http://127.0.0.1:8765/?dev
 .venv\Scripts\python -m unittest discover tests   # 測試
-.uild.ps1                            # 打包成 dist\Huiji-v<版本>-win64.zip
+powershell -ExecutionPolicy Bypass -File build.ps1   # 打包成 dist\Huiji-v<版本>-win64.zip
 ```
 
 ### 發布新版本
