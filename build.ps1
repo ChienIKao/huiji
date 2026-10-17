@@ -22,3 +22,17 @@ $zip = "dist\Huiji-v$version-win64.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path dist\Huiji -DestinationPath $zip
 Write-Host "完成：$zip"
+
+$iscc = @(
+    (Get-Command iscc -ErrorAction SilentlyContinue).Source,
+    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+if ($iscc) {
+    & $iscc /Q "/DAppVersion=$version" installer\huiji.iss
+    if ($LASTEXITCODE) { throw "Inno Setup 失敗" }
+    Write-Host "完成：dist\Huiji-Setup-v$version.exe"
+} else {
+    Write-Host "沒有安裝 Inno Setup 6，略過安裝程式"
+}

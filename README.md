@@ -27,7 +27,11 @@ Windows 上的會議紀錄工具：錄下會議（麥克風＋電腦聲音），
 
 ## 安裝
 
-到 [Releases](../../releases) 下載 `Huiji-v<版本>-win64.zip`，解壓縮後執行 `Huiji\Huiji.exe`，不需要安裝 Python。
+到 [Releases](../../releases) 下載 `Huiji-Setup-v<版本>.exe` 執行安裝，不需要系統管理員權限，也不需要安裝 Python。安裝完成後，開始功能表和桌面會出現「會記 Huiji」，要移除時到「設定 → 應用程式」解除安裝，會議資料不會被刪除。
+
+安裝程式沒有數位簽章，第一次執行時 Windows SmartScreen 可能會擋下，按「其他資訊 → 仍要執行」即可。
+
+不想安裝的話，也可以下載 `Huiji-v<版本>-win64.zip`，解壓縮後直接執行 `Huiji\Huiji.exe`。
 
 想直接從原始碼執行的話，先裝好 Python 3.10 以上，再雙擊 `啟動會記.bat`。第一次執行會自動建立 Python 環境並安裝套件。
 
@@ -68,7 +72,7 @@ python -m venv .venv
 .venv\Scripts\python main.py --debug   # 開視窗＋開發者工具
 .venv\Scripts\python main.py --dev     # 不開視窗，用瀏覽器開 http://127.0.0.1:8765/?dev
 .venv\Scripts\python -m unittest discover tests   # 測試
-powershell -ExecutionPolicy Bypass -File build.ps1   # 打包成 dist\Huiji-v<版本>-win64.zip
+powershell -ExecutionPolicy Bypass -File build.ps1   # 打包成 dist\ 下的 zip 與安裝程式（安裝程式需要 Inno Setup 6）
 ```
 
 ### 發布新版本
