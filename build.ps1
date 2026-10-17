@@ -17,7 +17,7 @@ $version = (& $python -c "import huiji; print(huiji.__version__)").Trim()
     --collect-all webview
 if ($LASTEXITCODE) { throw "PyInstaller 失敗" }
 
-Copy-Item README.md, THIRD_PARTY_NOTICES.md dist\Huiji\
+Copy-Item README.md, LICENSE, THIRD_PARTY_NOTICES.md dist\Huiji\
 $zip = "dist\Huiji-v$version-win64.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path dist\Huiji -DestinationPath $zip

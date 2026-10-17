@@ -178,3 +178,7 @@ installer/           Inno Setup 安裝程式腳本
 
 - [Shiyin 拾音](https://github.com/juinwei7/Shiyin)：介面設計、會議紀錄的提示詞與範本（MIT License，見 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）
 - [Faster-Whisper-XXL](https://github.com/Purfview/whisper-standalone-win)、[pyannote](https://github.com/pyannote/pyannote-audio)、[OpenCC](https://github.com/BYVoid/OpenCC)、[pywebview](https://github.com/r0x0r/pywebview)、[PyAudioWPatch](https://github.com/s0d3s/PyAudioWPatch)、[Inno Setup](https://jrsoftware.org/isinfo.php)
+
+## 授權
+
+[MIT License](LICENSE)。Faster-Whisper-XXL、OpenCC 等外部工具各自有自己的授權條款。
