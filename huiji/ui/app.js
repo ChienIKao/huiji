@@ -67,8 +67,6 @@ const hasMedia = () => !!(S.data && (S.data.has_audio || S.data.video));
 async function loadList() {
   S.meetings = await api.list_meetings(S.query);
   renderList();
-  if (!S.selected && S.meetings.length) select(S.meetings[0].id);
-  if (!S.meetings.length && !S.recording) showEmpty();
 }
 
 function statusText(m) {
@@ -99,20 +97,15 @@ $("#search").addEventListener("input", (e) => {
   searchTimer = setTimeout(() => { S.query = e.target.value; loadList(); }, 250);
 });
 
-function showEmpty() {
-  S.selected = null; S.data = null;
-  $("#detail").classList.add("hidden");
-  $("#empty").classList.remove("hidden");
-  checkEnv();
-}
-
 async function checkEnv() {
   const env = await api.check_environment();
-  const item = (ok, label, fix) => `<div class="${ok ? "ok" : "bad"}">${ok ? "✓" : "✗"} ${label}${ok ? "" : `　<span class="muted">${fix}</span>`}</div>`;
+  const item = (ok, label, detail, goto) => `<div class="env-row"><span class="status ${ok ? "ok" : "bad"}">${ok ? "✓" : "✗"}</span>
+    <span class="env-label">${label}</span><span class="muted">${detail}</span><button class="link" data-goto="${goto}">設定</button></div>`;
+  const ai = [env.claude && "Claude Code", env.codex && "Codex"].filter(Boolean).join("、");
   $("#envCheck").innerHTML =
-    item(env.whisper, "Faster-Whisper-XXL", "到設定指定 exe 位置") +
-    item(env.opencc, "OpenCC 簡轉繁", "沒有也能用，但會是簡體") +
-    item(env.claude || env.codex, `AI 整理（${[env.claude && "claude", env.codex && "codex"].filter(Boolean).join("、") || "未安裝"}）`, "安裝並登入 Claude Code 或 Codex");
+    item(env.whisper, "轉錄", env.whisper ? "Faster-Whisper-XXL" : "找不到 Faster-Whisper-XXL，請指定位置", "set-whisper") +
+    item(env.opencc, "簡轉繁", env.opencc ? "OpenCC" : "沒有 OpenCC 也能用，但逐字稿會是簡體", "set-whisper") +
+    item(env.claude || env.codex, "AI 整理", ai || "請安裝並登入 Claude Code 或 Codex", "set-ai");
 }
 
 // ---------- 選取會議 ----------
@@ -122,8 +115,8 @@ async function select(id, keepTab = false) {
   if (changed) { S.editing = false; S.trFilter = ""; S.trSpeaker = ""; }
   S.data = await api.get_meeting(id);
   if (changed && !keepTab) S.tab = S.data.notes ? "summary" : "transcript";
-  $("#empty").classList.add("hidden");
-  $("#detail").classList.remove("hidden");
+  showView("detail");
+  S.selected = id;
   renderList();
   renderDetail(changed);
 }
@@ -463,9 +456,9 @@ $("#moreMenu").addEventListener("click", async (e) => {
   } else if (m === "delete") {
     if (await confirmBox("移到垃圾桶？", "之後可以從垃圾桶還原。")) {
       await call("delete_meeting", id);
-      S.selected = null;
       await loadList();
       updateTrashLabel();
+      showHome();
     }
   }
 });
@@ -533,14 +526,14 @@ function highlightNow(force) {
 const MODES = { both: "麥克風＋電腦聲音（線上會議）", mic: "只錄麥克風（實體會議）", system: "只錄電腦聲音" };
 
 $("#recBtn").addEventListener("click", startRecording);
-$("#emptyRec").addEventListener("click", startRecording);
 $("#recModeBtn").addEventListener("click", (e) => {
   e.stopPropagation();
   const items = Object.entries(MODES).map(([k, v]) => ({ label: (S.recMode === k ? "✓ " : "　") + v, fn: () => {
-    S.recMode = k; localStorage.setItem("recMode", k); toast(`錄音來源：${v}`);
+    S.recMode = k; localStorage.setItem("recMode", k); toast(`錄音來源：${v}`); renderHomeMode();
   } }));
   items.push({ sep: true }, { label: (S.recScreen ? "✓ " : "　") + "同時錄製螢幕", fn: () => {
     S.recScreen = !S.recScreen; localStorage.setItem("recScreen", S.recScreen ? "1" : "0");
+    $("#homeScreen").checked = S.recScreen; $("#homeMonitor").disabled = !S.recScreen;
     toast(S.recScreen ? "錄音時會同時錄製螢幕（在設定中選擇要錄哪個螢幕）" : "只錄聲音");
     updateRecTooltip();
   } });
@@ -666,7 +659,6 @@ async function importFiles() {
   if (ids?.length) { toast(`已匯入 ${ids.length} 個檔案，開始轉錄`); await loadList(); select(ids[0]); }
 }
 $("#importBtn").addEventListener("click", importFiles);
-$("#emptyImport").addEventListener("click", importFiles);
 
 // ---------- 輪詢 ----------
 let tick = 0;
@@ -683,6 +675,7 @@ async function poll() {
       const after = JSON.stringify(S.meetings.map((m) => [m.id, m.status, m.progress, m.title, m.review_count]));
       if (before !== after) {
         renderList();
+        if (!$("#home").classList.contains("hidden")) renderHomeRecent();
         const cur = S.meetings.find((m) => m.id === S.selected);
         if (cur && S.data && !(S.recording && S.recording.id === cur.id) &&
             (cur.status !== S.data.meeting.status || cur.progress !== S.data.meeting.progress || cur.title !== S.data.meeting.title)) {
@@ -725,63 +718,157 @@ $("#trashBtn").addEventListener("click", async () => {
   };
 });
 
-// ---------- 設定 ----------
-$("#settingsBtn").addEventListener("click", openSettings);
-async function openSettings() {
-  const { settings: s, devices, backends, version, monitors } = await api.get_settings();
-  const opt = (list, cur, def) => `<option value="-1">${def}</option>` + list.map((d) => `<option value="${d.index}" ${d.index === cur ? "selected" : ""}>${esc(d.name)}</option>`).join("");
-  openModal(`<h3>設定 <small class="muted" style="font-weight:400;font-size:13px">v${esc(version)}</small></h3>
-    <div class="row"><label class="lbl">AI 整理</label>
-      <div class="inline">
-        <select id="sBackend">
-          <option value="claude" ${s.llm_backend === "claude" ? "selected" : ""}>Claude Code${backends.claude ? "" : "（未安裝）"}</option>
-          <option value="codex" ${s.llm_backend === "codex" ? "selected" : ""}>Codex${backends.codex ? "" : "（未安裝）"}</option>
-          <option value="none" ${s.llm_backend === "none" ? "selected" : ""}>不整理，只要逐字稿</option>
-        </select>
-        <input type="text" id="sLlmModel" value="${esc(s.llm_model)}" placeholder="模型（留空用預設）">
-      </div>
-      <div class="help">使用你已經登入的 CLI，只會送出逐字稿文字，不會上傳音檔。</div></div>
-    <div class="row"><label class="lbl">詞彙表（一行一個：人名、產品名、專有名詞）</label>
-      <textarea id="sGlossary" rows="4">${esc((s.glossary || []).join("\n"))}</textarea>
-      <div class="help">轉錄時當作提示，AI 整理時也會依這裡的寫法校正。</div></div>
-    <div class="row"><label class="lbl">麥克風</label><select id="sMic">${opt(devices.mics, s.mic_device, "系統預設")}</select></div>
-    <div class="row"><label class="lbl">電腦聲音來源</label><select id="sLoop">${opt(devices.loopbacks, s.loopback_device, "預設喇叭")}</select></div>
-    <div class="row inline">
-      <div><label class="lbl">螢幕錄影：要錄的螢幕</label><select id="sMonitor">${monitors.map((m) =>
-        `<option value="${m.index}" ${m.index === s.screen_monitor ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select></div>
-      <div><label class="lbl">影格率</label><select id="sFps">${[10, 15, 30].map((f) =>
-        `<option value="${f}" ${f === s.screen_fps ? "selected" : ""}>${f} fps${f === 15 ? "（建議）" : ""}</option>`).join("")}</select></div>
-    </div>
-    <div class="row"><label class="lbl">Faster-Whisper-XXL 位置</label><input type="text" id="sWhisper" value="${esc(s.whisper_exe)}"></div>
-    <div class="row inline">
-      <div><label class="lbl">模型</label><input type="text" id="sModel" value="${esc(s.whisper_model)}"></div>
-      <div><label class="lbl">語言（留空自動偵測）</label><input type="text" id="sLang" value="${esc(s.whisper_language)}"></div>
-    </div>
-    <div class="row"><label class="check"><input type="checkbox" id="sMulti" ${s.multilingual ? "checked" : ""}> 逐段偵測語言（中英夾雜的會議建議開啟）</label></div>
-    <div class="row inline">
-      <label class="check"><input type="checkbox" id="sDiarize" ${s.diarize ? "checked" : ""}> 分辨說話者</label>
-      <div><label class="lbl">最少人數（0＝自動）</label><input type="number" min="0" id="sMin" value="${s.min_speakers}"></div>
-      <div><label class="lbl">最多人數（0＝自動）</label><input type="number" min="0" id="sMax" value="${s.max_speakers}"></div>
-    </div>
-    <div class="row"><label class="lbl">OpenCC 位置（簡轉繁）</label><input type="text" id="sOpencc" value="${esc(s.opencc_exe)}"></div>
-    <div class="row"><label class="lbl">資料夾</label><input type="text" id="sData" value="${esc(s.data_dir)}"></div>
-    <div class="actions"><button class="btn" data-close>取消</button><button class="btn primary" id="sSave">儲存</button></div>`);
-  $("#sSave").onclick = async () => {
-    await call("save_settings", {
-      llm_backend: $("#sBackend").value, llm_model: $("#sLlmModel").value.trim(),
-      glossary: $("#sGlossary").value.split("\n").map((x) => x.trim()).filter(Boolean),
-      mic_device: +$("#sMic").value, loopback_device: +$("#sLoop").value,
-      screen_monitor: +$("#sMonitor").value, screen_fps: +$("#sFps").value,
-      whisper_exe: $("#sWhisper").value.trim(), whisper_model: $("#sModel").value.trim(), whisper_language: $("#sLang").value.trim(), multilingual: $("#sMulti").checked,
-      diarize: $("#sDiarize").checked, min_speakers: +$("#sMin").value || 0, max_speakers: +$("#sMax").value || 0,
-      opencc_exe: $("#sOpencc").value.trim(), data_dir: $("#sData").value.trim(),
-    });
-    closeModal();
-    toast("設定已儲存");
-    S.selected = null;
-    loadList();
-  };
+// ---------- 頁面切換 ----------
+function showView(name) {
+  for (const [id, v] of [["#home", "home"], ["#settingsView", "settings"], ["#detail", "detail"]])
+    $(id).classList.toggle("hidden", v !== name);
+  $("#settingsBtn").classList.toggle("active", name === "settings");
+  $("#homeBtn").classList.toggle("active", name === "home");
+  if (name !== "detail") {
+    S.selected = null; S.data = null;
+    if (!audio.paused) audio.pause();
+    renderList();
+  }
 }
+
+// ---------- 首頁 ----------
+async function showHome() {
+  showView("home");
+  renderHomeMode();
+  $("#homeScreen").checked = S.recScreen;
+  const { settings: s, monitors } = await api.get_settings();
+  $("#homeMonitor").innerHTML = monitors.map((m) =>
+    `<option value="${m.index}" ${m.index === s.screen_monitor ? "selected" : ""}>${esc(m.name)}</option>`).join("");
+  $("#homeMonitor").disabled = !S.recScreen;
+  renderHomeRecent();
+  checkEnv();
+}
+function renderHomeRecent() {
+  const recent = S.meetings.slice(0, 5);
+  $("#homeRecent").innerHTML = recent.length ? recent.map((m) => `
+    <button class="recent-item" data-id="${m.id}"><span class="t">${esc(m.title)}</span>
+      <span class="s">${m.date.slice(5).replace("-", "/")}${m.duration ? `・${Math.max(1, Math.round(m.duration / 60))} 分鐘` : ""}　${statusText(m)}</span></button>`).join("")
+    : `<p class="muted">還沒有會議。按「開始錄音」，或匯入以前錄好的音檔、影片。</p>`;
+}
+function renderHomeMode() {
+  for (const b of document.querySelectorAll("#homeMode button")) b.classList.toggle("active", b.dataset.mode === S.recMode);
+}
+$("#homeBtn").addEventListener("click", showHome);
+$("#homeMode").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-mode]");
+  if (!b) return;
+  S.recMode = b.dataset.mode; localStorage.setItem("recMode", S.recMode);
+  renderHomeMode();
+});
+$("#homeScreen").addEventListener("change", (e) => {
+  S.recScreen = e.target.checked; localStorage.setItem("recScreen", S.recScreen ? "1" : "0");
+  $("#homeMonitor").disabled = !S.recScreen;
+  updateRecTooltip();
+});
+$("#homeMonitor").addEventListener("change", (e) => api.save_settings({ screen_monitor: +e.target.value }));
+$("#homeRec").addEventListener("click", startRecording);
+$("#homeImport").addEventListener("click", importFiles);
+$("#homeRecent").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-id]");
+  if (b) select(b.dataset.id);
+});
+$("#envCheck").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-goto]");
+  if (b) showSettings(b.dataset.goto);
+});
+
+// ---------- 設定 ----------
+$("#settingsBtn").addEventListener("click", () => showSettings());
+async function showSettings(focus) {
+  showView("settings");
+  const { settings: s, devices, backends, version, monitors } = await api.get_settings();
+  const env = await api.check_environment();
+  const opt = (list, cur, def) => `<option value="-1">${def}</option>` + list.map((d) => `<option value="${d.index}" ${d.index === cur ? "selected" : ""}>${esc(d.name)}</option>`).join("");
+  const sel = (key, options, cur) => `<select data-key="${key}" data-type="${typeof cur === "number" ? "int" : "str"}">${options.map(([v, label]) =>
+    `<option value="${v}" ${String(v) === String(cur) ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`;
+  const text = (key, val, ph = "") => `<input type="text" data-key="${key}" value="${esc(val)}" placeholder="${esc(ph)}">`;
+  const num = (key, val) => `<input type="number" min="0" data-key="${key}" data-type="int" value="${val}">`;
+  const check = (key, val, label) => `<label class="switch"><input type="checkbox" data-key="${key}" data-type="bool" ${val ? "checked" : ""}><span></span>${label}</label>`;
+  const status = (ok, okText, badText) => `<span class="status ${ok ? "ok" : "bad"}">${ok ? "✓ " + okText : "✗ " + badText}</span>`;
+
+  $("#settingsBody").innerHTML = `
+    <h1 class="page-title">設定</h1>
+    <p class="page-sub">修改後會自動儲存。　v${esc(version)}</p>
+
+    <section class="card" id="set-ai"><h3>AI 整理會議紀錄</h3>
+      <div class="grid2">
+        <div class="field"><label class="lbl">使用</label>${sel("llm_backend", [
+          ["claude", `Claude Code${backends.claude ? "" : "（未安裝）"}`],
+          ["codex", `Codex${backends.codex ? "" : "（未安裝）"}`],
+          ["none", "不整理，只要逐字稿"]], s.llm_backend)}</div>
+        <div class="field"><label class="lbl">模型</label>${text("llm_model", s.llm_model, "留空用預設模型")}</div>
+      </div>
+      <p class="help">使用你電腦上已經登入的 CLI。只會送出逐字稿文字，不會上傳音檔。</p>
+      <div class="field"><label class="lbl">詞彙表（一行一個：人名、產品名、專有名詞）</label>
+        <textarea data-key="glossary" data-type="list" rows="4" placeholder="例如：&#10;王小明&#10;Breeze ASR&#10;PayLink">${esc((s.glossary || []).join("\n"))}</textarea>
+        <p class="help">轉錄時當作提示，AI 整理時也會照這裡的寫法校正。</p></div>
+    </section>
+
+    <section class="card" id="set-rec"><h3>錄音</h3>
+      <div class="grid2">
+        <div class="field"><label class="lbl">麥克風</label><select data-key="mic_device" data-type="int">${opt(devices.mics, s.mic_device, "系統預設")}</select></div>
+        <div class="field"><label class="lbl">電腦聲音來源</label><select data-key="loopback_device" data-type="int">${opt(devices.loopbacks, s.loopback_device, "預設喇叭")}</select></div>
+      </div>
+    </section>
+
+    <section class="card" id="set-screen"><h3>螢幕錄影</h3>
+      <div class="grid2">
+        <div class="field"><label class="lbl">要錄的螢幕</label>${sel("screen_monitor", monitors.map((m) => [m.index, m.name]), s.screen_monitor)}</div>
+        <div class="field"><label class="lbl">影格率</label>${sel("screen_fps", [[10, "10 fps（檔案最小）"], [15, "15 fps（建議）"], [30, "30 fps（畫面較流暢）"]], s.screen_fps)}</div>
+      </div>
+      <p class="help">在首頁或錄音按鈕旁的選單勾選「同時錄製螢幕」才會錄影。</p>
+    </section>
+
+    <section class="card" id="set-whisper"><h3>轉錄</h3>
+      <div class="field"><label class="lbl">Faster-Whisper-XXL 位置 ${status(env.whisper, "找到了", "找不到")}</label>${text("whisper_exe", s.whisper_exe)}</div>
+      <div class="grid2">
+        <div class="field"><label class="lbl">模型</label>${text("whisper_model", s.whisper_model)}</div>
+        <div class="field"><label class="lbl">語言（留空自動偵測）</label>${text("whisper_language", s.whisper_language)}</div>
+      </div>
+      <div class="field">${check("multilingual", s.multilingual, "逐段偵測語言（中英夾雜的會議建議開啟，不會漏掉英文句子）")}</div>
+      <div class="grid3">
+        <div class="field">${check("diarize", s.diarize, "分辨說話者")}</div>
+        <div class="field"><label class="lbl">最少人數（0＝自動）</label>${num("min_speakers", s.min_speakers)}</div>
+        <div class="field"><label class="lbl">最多人數（0＝自動）</label>${num("max_speakers", s.max_speakers)}</div>
+      </div>
+      <div class="field"><label class="lbl">OpenCC 位置（簡轉繁，選用） ${status(env.opencc, "找到了", "找不到，逐字稿會是簡體")}</label>${text("opencc_exe", s.opencc_exe)}</div>
+    </section>
+
+    <section class="card" id="set-data"><h3>資料</h3>
+      <div class="field"><label class="lbl">會議存放的資料夾</label>
+        <div class="input-row">${text("data_dir", s.data_dir)}<button class="btn" id="openDataDir">開啟</button></div></div>
+    </section>`;
+
+  if (focus) {
+    const el = $(`#${focus}`);
+    el?.scrollIntoView({ block: "start" });
+    el?.classList.add("flash");
+  }
+  $("#openDataDir").onclick = () => api.open_data_dir();
+}
+
+$("#settingsBody").addEventListener("change", async (e) => {
+  const el = e.target.closest("[data-key]");
+  if (!el) return;
+  const type = el.dataset.type || "str";
+  let value = el.type === "checkbox" ? el.checked : el.value;
+  if (type === "int") value = parseInt(value, 10) || 0;
+  else if (type === "list") value = value.split("\n").map((x) => x.trim()).filter(Boolean);
+  else if (type === "str") value = value.trim();
+  await call("save_settings", { [el.dataset.key]: value });
+  toast("已儲存", 1200);
+  if (["whisper_exe", "opencc_exe", "llm_backend"].includes(el.dataset.key)) {
+    const y = $("#settingsView").scrollTop;
+    await showSettings();
+    $("#settingsView").scrollTop = y;
+  }
+  if (el.dataset.key === "data_dir") { await loadList(); updateTrashLabel(); }
+});
 
 // ---------- 對話框 ----------
 function openModal(html) {
@@ -854,6 +941,13 @@ async function init() {
   }
   await loadList();
   updateTrashLabel();
+  // 網址參數（開發與截圖用）：?m=<會議 id>&tab=summary 或 ?view=settings
+  const q = new URLSearchParams(location.search);
+  if (q.get("video") === "0") S.showVideo = false;
+  if (S.recording) await select(S.recording.id);
+  else if (q.get("view") === "settings") await showSettings();
+  else if (q.get("m")) { S.tab = q.get("tab") || "summary"; await select(q.get("m"), true); }
+  else await showHome();
   poll();
 }
 // 開發模式（python main.py --dev）：在一般瀏覽器開啟時，透過 HTTP 呼叫同一組 API

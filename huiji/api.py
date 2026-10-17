@@ -213,6 +213,10 @@ class Api:
             return None
         return r if isinstance(r, str) else r[0]
 
+    def open_data_dir(self) -> None:
+        self._settings.meetings_dir.mkdir(parents=True, exist_ok=True)
+        os.startfile(self._settings.data_dir)  # noqa: S606
+
     def open_folder(self, mid: str) -> None:
         os.startfile(self._store.folder(mid))  # noqa: S606
 

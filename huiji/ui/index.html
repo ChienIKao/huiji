@@ -10,6 +10,8 @@
 <div id="app">
   <aside id="sidebar">
     <div class="side-toolbar">
+      <button class="brand" id="homeBtn" title="首頁">會記</button>
+      <div class="spacer"></div>
       <div class="rec-group" id="recGroup">
         <button class="icon-btn" id="recBtn" title="開始錄音 (Ctrl+Shift+R)"></button>
         <button class="icon-btn small" id="recModeBtn" title="錄音來源"></button>
@@ -18,29 +20,60 @@
         <span class="dot"></span><span id="sideTimer">00:00</span>
         <button class="icon-btn" id="sideStop" title="停止並轉錄"></button>
       </div>
-      <div class="spacer"></div>
       <button class="icon-btn" id="importBtn" title="匯入音檔或影片"></button>
-      <button class="icon-btn" id="settingsBtn" title="設定"></button>
     </div>
     <div class="search">
       <span class="search-icon"></span>
       <input id="search" placeholder="搜尋所有會議" autocomplete="off">
     </div>
     <ul id="meetingList"></ul>
-    <button id="trashBtn" class="trash-btn"><span class="ico"></span><span id="trashLabel">垃圾桶</span></button>
+    <div class="side-nav">
+      <button id="settingsBtn" class="nav-btn"><span class="ico gear"></span>設定</button>
+      <button id="trashBtn" class="nav-btn"><span class="ico trash"></span><span id="trashLabel">垃圾桶</span></button>
+    </div>
   </aside>
 
   <main id="main">
-    <div id="empty" class="empty">
-      <div class="empty-inner">
-        <h2>會記</h2>
-        <p>錄下會議，自動轉成逐字稿並整理成會議紀錄。</p>
-        <div class="empty-actions">
-          <button class="btn primary" id="emptyRec">開始錄音</button>
-          <button class="btn" id="emptyImport">匯入音檔</button>
-        </div>
-        <div id="envCheck" class="env"></div>
+    <div id="home" class="page hidden">
+      <div class="page-inner">
+        <h1 class="page-title">會記</h1>
+        <p class="page-sub">錄下會議，自動轉成逐字稿、分辨說話者，再整理成會議紀錄。</p>
+
+        <section class="card">
+          <h3>新的會議</h3>
+          <div class="field">
+            <label class="lbl">錄音來源</label>
+            <div class="seg" id="homeMode">
+              <button data-mode="both"><strong>線上會議</strong><small>麥克風＋電腦聲音</small></button>
+              <button data-mode="mic"><strong>實體會議</strong><small>只錄麥克風</small></button>
+              <button data-mode="system"><strong>電腦聲音</strong><small>影片、直播、課程</small></button>
+            </div>
+          </div>
+          <div class="field screen-row">
+            <label class="switch"><input type="checkbox" id="homeScreen"><span></span>同時錄製螢幕</label>
+            <select id="homeMonitor" class="inline-select"></select>
+          </div>
+          <div class="home-actions">
+            <button class="btn primary big" id="homeRec"><span class="ico rec"></span>開始錄音</button>
+            <button class="btn big" id="homeImport"><span class="ico import"></span>匯入音檔或影片</button>
+            <span class="muted kbd-hint">Ctrl+Shift+R 隨時開始／停止</span>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>最近的會議</h3>
+          <div id="homeRecent" class="recent"></div>
+        </section>
+
+        <section class="card">
+          <h3>環境</h3>
+          <div id="envCheck" class="env"></div>
+        </section>
       </div>
+    </div>
+
+    <div id="settingsView" class="page hidden">
+      <div class="page-inner" id="settingsBody"></div>
     </div>
 
     <div id="detail" class="hidden">
