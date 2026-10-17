@@ -1,0 +1,195 @@
+"""轉錄：ffmpeg 混音 → Faster-Whisper-XXL（含 pyannote 分講者）→ OpenCC 轉繁體"""
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import tempfile
+from pathlib import Path
+
+from .config import Settings
+
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+AUDIO_EXTS = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".ogg", ".opus", ".wma", ".caf", ".aiff",
+              ".mp4", ".mov", ".mkv", ".webm", ".avi", ".flv", ".wmv"}
+
+
+class TranscribeError(RuntimeError):
+    pass
+
+
+def _run(args: list[str], what: str) -> subprocess.CompletedProcess:
+    r = subprocess.run(args, capture_output=True, creationflags=NO_WINDOW)
+    if r.returncode != 0:
+        tail = r.stderr.decode("utf-8", "replace")[-600:]
+        raise TranscribeError(f"{what}失敗（結束代碼 {r.returncode}）：{tail}")
+    return r
+
+
+def probe_duration(s: Settings, path: Path) -> float:
+    r = subprocess.run([s.ffmpeg_exe, "-hide_banner", "-i", str(path)], capture_output=True, creationflags=NO_WINDOW)
+    m = re.search(rb"Duration: (\d+):(\d+):(\d+\.\d+)", r.stderr)
+    if not m:
+        return 0.0
+    h, mi, sec = m.groups()
+    return int(h) * 3600 + int(mi) * 60 + float(sec)
+
+
+def prepare_audio(s: Settings, folder: Path) -> Path:
+    """產生播放用的 audio.m4a 和轉錄用的 16 kHz 單聲道 work.wav，回傳 work.wav"""
+    work = folder / "work.wav"
+    tracks = [folder / n for n in ("mic.wav", "system.wav") if (folder / n).exists() and (folder / n).stat().st_size > 44]
+    imported = next((p for p in folder.glob("source.*")), None)
+    if tracks:
+        inputs = sum((["-i", str(t)] for t in tracks), [])
+        if len(tracks) == 2:
+            mix = ["-filter_complex", "[0:a][1:a]amix=inputs=2:duration=longest:normalize=0[a]", "-map", "[a]"]
+        else:
+            mix = []
+        src = inputs + mix
+    elif imported:
+        src = ["-i", str(imported), "-vn"]
+    else:
+        raise TranscribeError("找不到音檔")
+    audio = folder / "audio.m4a"
+    if not audio.exists():
+        _run([s.ffmpeg_exe, "-y", "-hide_banner", "-loglevel", "error", *src,
+              "-ac", "1", "-c:a", "aac", "-b:a", "96k", str(audio)], "產生音檔")
+    _run([s.ffmpeg_exe, "-y", "-hide_banner", "-loglevel", "error", "-i", str(audio),
+          "-ac", "1", "-ar", "16000", str(work)], "轉換音檔")
+    return work
+
+
+SRT_BLOCK = re.compile(
+    r"(\d{2}):(\d{2}):(\d{2}),(\d{3}) --> (\d{2}):(\d{2}):(\d{2}),(\d{3})\s*\n(.*?)(?:\n\s*\n|\Z)", re.S)
+SPEAKER = re.compile(r"^\[(SPEAKER_\d+)\]:\s*")
+PROGRESS = re.compile(r"^\[(?:(\d+):)?(\d+):(\d+\.\d+) --> (?:(\d+):)?(\d+):(\d+\.\d+)\]")
+
+
+def parse_srt(text: str) -> list[dict]:
+    segments = []
+    for m in SRT_BLOCK.finditer(text):
+        g = m.groups()
+        start = int(g[0]) * 3600 + int(g[1]) * 60 + int(g[2]) + int(g[3]) / 1000
+        end = int(g[4]) * 3600 + int(g[5]) * 60 + int(g[6]) + int(g[7]) / 1000
+        body = " ".join(line.strip() for line in g[8].strip().splitlines()).strip()
+        speaker = None
+        sm = SPEAKER.match(body)
+        if sm:
+            speaker = sm.group(1)
+            body = body[sm.end():].strip()
+        if body:
+            segments.append({"start": round(start, 2), "end": round(end, 2), "speaker": speaker, "text": body})
+    return segments
+
+
+CJK = r"[㐀-鿿豈-﫿　-〿＀-￯]"
+HALF_TO_FULL = {",": "，", "?": "？", "!": "！", ":": "：", ";": "；"}
+
+
+def fix_punctuation(text: str) -> str:
+    """Whisper 在中文句子裡常用半形標點：緊鄰中文字的改成全形"""
+    return re.sub(rf"(?<={CJK})\s*([,?!:;])\s*|\s*([,?!:;])\s*(?={CJK})",
+                  lambda m: HALF_TO_FULL[m.group(1) or m.group(2)], text)
+
+
+def merge_segments(segments: list[dict], max_gap: float = 2.0, max_chars: int = 160) -> list[dict]:
+    """同一個人連續講的短句併成一段，逐字稿比較好讀"""
+    merged: list[dict] = []
+    for seg in segments:
+        last = merged[-1] if merged else None
+        if (last and last["speaker"] == seg["speaker"] and seg["start"] - last["end"] <= max_gap
+                and len(last["text"]) + len(seg["text"]) <= max_chars):
+            sep = " " if last["text"][-1:].isascii() and seg["text"][:1].isascii() else ""
+            last["text"] += sep + seg["text"]
+            last["end"] = seg["end"]
+        else:
+            merged.append(dict(seg))
+    return merged
+
+
+def to_traditional(s: Settings, texts: list[str]) -> list[str]:
+    if not texts or not Path(s.opencc_exe).exists():
+        return texts
+    with tempfile.TemporaryDirectory() as d:
+        src, dst = Path(d) / "in.txt", Path(d) / "out.txt"
+        src.write_text("\n".join(t.replace("\n", " ") for t in texts), encoding="utf-8")
+        _run([s.opencc_exe, "-c", s.opencc_config, "-i", str(src), "-o", str(dst)], "簡轉繁")
+        out = dst.read_text(encoding="utf-8").split("\n")
+    return out if len(out) == len(texts) else texts
+
+
+def transcribe(s: Settings, folder: Path, duration: float, on_progress=None, glossary: list[str] | None = None,
+               on_process=None) -> list[dict]:
+    exe = Path(s.whisper_exe)
+    if not exe.exists():
+        raise TranscribeError(f"找不到 Faster-Whisper-XXL：{exe}")
+    work = prepare_audio(s, folder)
+    out_dir = folder / "whisper"
+    out_dir.mkdir(exist_ok=True)
+    args = [str(exe), str(work), "-m", s.whisper_model, "-o", str(out_dir), "-f", "srt",
+            "--vad_filter", "true", "--condition_on_previous_text", "false", "--beep_off"]
+    if s.whisper_language:
+        args += ["-l", s.whisper_language]
+    if s.multilingual:
+        args += ["--multilingual", "true"]
+    if glossary:
+        args += ["--initial_prompt", "、".join(glossary)]
+    if s.diarize:
+        args += ["--diarize", "pyannote_v3.1"]
+        if s.min_speakers:
+            args += ["--min_speakers", str(s.min_speakers)]
+        if s.max_speakers:
+            args += ["--max_speakers", str(s.max_speakers)]
+
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                            creationflags=NO_WINDOW, cwd=str(exe.parent))
+    if on_process:
+        on_process(proc)
+    tail: list[str] = []
+    assert proc.stdout
+    for raw in proc.stdout:
+        line = raw.decode("utf-8", "replace").rstrip()
+        if not line:
+            continue
+        tail = (tail + [line])[-15:]
+        if on_progress:
+            m = PROGRESS.match(line)
+            if m and duration > 0:
+                end = int(m.group(4) or 0) * 3600 + int(m.group(5)) * 60 + float(m.group(6))
+                on_progress(min(0.99, end / duration))
+            elif "Diariz" in line:
+                on_progress(-1)
+    proc.wait()
+    work.unlink(missing_ok=True)
+    srt = out_dir / "work.srt"
+    if proc.returncode != 0 or not srt.exists():
+        raise TranscribeError(f"轉錄失敗（結束代碼 {proc.returncode}）：\n" + "\n".join(tail))
+
+    segments = merge_segments(parse_srt(srt.read_text(encoding="utf-8")))
+    converted = to_traditional(s, [seg["text"] for seg in segments])
+    for seg, text in zip(segments, converted):
+        seg["text"] = fix_punctuation(text)
+    return segments
+
+
+def fmt_time(seconds: float) -> str:
+    t = max(0, int(seconds))
+    if t >= 3600:
+        return f"{t // 3600}:{t % 3600 // 60:02d}:{t % 60:02d}"
+    return f"{t // 60:02d}:{t % 60:02d}"
+
+
+def srt_time(seconds: float) -> str:
+    ms = int(round(max(0.0, seconds) * 1000))
+    return f"{ms // 3600000:02d}:{ms % 3600000 // 60000:02d}:{ms % 60000 // 1000:02d},{ms % 1000:03d}"
+
+
+def to_srt(segments: list[dict], speakers: dict) -> str:
+    blocks = []
+    for i, seg in enumerate(segments, 1):
+        name = speakers.get(seg["speaker"], seg["speaker"]) if seg["speaker"] else ""
+        text = f"{name}：{seg['text']}" if name else seg["text"]
+        blocks.append(f"{i}\n{srt_time(seg['start'])} --> {srt_time(seg['end'])}\n{text}\n")
+    return "\n".join(blocks)
