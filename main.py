@@ -1,10 +1,20 @@
 import sys
 
-from huiji import server
+from huiji import config, server
 from huiji.api import Api
 
 
+def _redirect_output() -> None:
+    """打包成無主控台的 exe 時沒有 stdout／stderr：改寫到 %APPDATA%/Huiji/huiji.log"""
+    if sys.stdout is None or sys.stderr is None:
+        config.APP_DIR.mkdir(parents=True, exist_ok=True)
+        log = open(config.APP_DIR / "huiji.log", "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+        sys.stdout = sys.stdout or log
+        sys.stderr = sys.stderr or log
+
+
 def main() -> None:
+    _redirect_output()
     api = Api()
 
     if "--dev" in sys.argv:

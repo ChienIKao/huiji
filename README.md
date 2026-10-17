@@ -21,14 +21,17 @@ Windows 上的會議紀錄工具：錄下會議（麥克風＋電腦聲音），
 ## 需求
 
 - Windows 10/11
-- Python 3.10 以上
 - [Faster-Whisper-XXL](https://github.com/Purfview/whisper-standalone-win)（有 NVIDIA 顯卡會快很多）
 - [OpenCC](https://github.com/BYVoid/OpenCC)（選用，用來轉繁體）
 - 已登入的 [Claude Code](https://claude.com/claude-code) 或 [Codex CLI](https://github.com/openai/codex)
 
-## 使用
+## 安裝
 
-雙擊 `啟動會記.bat`。第一次執行會自動建立 Python 環境並安裝套件。
+到 [Releases](../../releases) 下載 `Huiji-v<版本>-win64.zip`，解壓縮後執行 `Huiji\Huiji.exe`，不需要安裝 Python。
+
+想直接從原始碼執行的話，先裝好 Python 3.10 以上，再雙擊 `啟動會記.bat`。第一次執行會自動建立 Python 環境並安裝套件。
+
+## 使用
 
 第一次開啟後，到右上角的設定確認：
 
@@ -54,6 +57,7 @@ Windows 上的會議紀錄工具：錄下會議（麥克風＋電腦聲音），
   - `transcript.json`、`transcript.srt`：逐字稿
   - `notes.json`：會議紀錄
 - 設定：`%APPDATA%\Huiji\settings.json`
+- 錯誤紀錄（exe 版）：`%APPDATA%\Huiji\huiji.log`
 
 ## 開發
 
@@ -64,7 +68,14 @@ python -m venv .venv
 .venv\Scripts\python main.py --debug   # 開視窗＋開發者工具
 .venv\Scripts\python main.py --dev     # 不開視窗，用瀏覽器開 http://127.0.0.1:8765/?dev
 .venv\Scripts\python -m unittest discover tests   # 測試
+.uild.ps1                            # 打包成 dist\Huiji-v<版本>-win64.zip
 ```
+
+### 發布新版本
+
+1. 改 `huiji/__init__.py` 的 `__version__`
+2. commit 後打標籤並推送：`git tag v0.1.0 && git push origin main v0.1.0`
+3. GitHub Actions 會自動打包並建立 Release（標籤要跟 `__version__` 一致，否則會失敗）
 
 ```
 main.py              進入點（pywebview 視窗）

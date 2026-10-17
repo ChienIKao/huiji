@@ -8,7 +8,7 @@ from pathlib import Path
 
 import webview
 
-from . import config, notes, recorder, transcribe
+from . import __version__, config, notes, recorder, transcribe
 from .jobs import Jobs
 from .store import Store
 
@@ -200,7 +200,7 @@ class Api:
 
     # ---- 設定 ----
     def get_settings(self) -> dict:
-        return {"settings": asdict(self._settings), "devices": recorder.list_devices(),
+        return {"settings": asdict(self._settings), "devices": recorder.list_devices(), "version": __version__,
                 "backends": notes.available_backends()}
 
     def save_settings(self, data: dict) -> dict:

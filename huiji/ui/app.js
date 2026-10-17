@@ -699,9 +699,9 @@ $("#trashBtn").addEventListener("click", async () => {
 // ---------- 設定 ----------
 $("#settingsBtn").addEventListener("click", openSettings);
 async function openSettings() {
-  const { settings: s, devices, backends } = await api.get_settings();
+  const { settings: s, devices, backends, version } = await api.get_settings();
   const opt = (list, cur, def) => `<option value="-1">${def}</option>` + list.map((d) => `<option value="${d.index}" ${d.index === cur ? "selected" : ""}>${esc(d.name)}</option>`).join("");
-  openModal(`<h3>設定</h3>
+  openModal(`<h3>設定 <small class="muted" style="font-weight:400;font-size:13px">v${esc(version)}</small></h3>
     <div class="row"><label class="lbl">AI 整理</label>
       <div class="inline">
         <select id="sBackend">
