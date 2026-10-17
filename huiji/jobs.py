@@ -5,7 +5,7 @@ import queue
 import threading
 import traceback
 
-from . import notes, transcribe
+from . import notes, selfvoice, transcribe
 from .config import Settings
 from .store import Store
 
@@ -75,6 +75,8 @@ class Jobs:
             segments = transcribe.transcribe(s, folder, duration, progress, s.glossary, self._set_proc)
             self.store.write_json(mid, "transcript.json", segments)
             meeting = self.store.load(mid)
+            self._name_self(mid, folder, meeting, segments)
+            meeting = self.store.load(mid)
             (folder / "transcript.srt").write_text(transcribe.to_srt(segments, meeting.get("speakers", {})),
                                                   encoding="utf-8")
 
@@ -91,7 +93,21 @@ class Jobs:
                 self.store.update(mid, title=result["title"])
         self.store.update(mid, status="done", progress="")
 
-    def revise(self, mid: str, answers: list[dict]) -> None:
+    def _name_self(self, mid: str, folder, meeting: dict, segments: list[dict]) -> None:
+        """分軌錄音時，把麥克風那一軌主導的說話者命名為「我」（使用者已命名的不動）"""
+        speakers = dict(meeting.get("speakers") or {})
+        if "我" in speakers.values():
+            return
+        try:
+            me = selfvoice.detect_self(folder, segments)
+        except Exception:  # noqa: BLE001  判斷不出來就算了，不影響轉錄
+            traceback.print_exc()
+            return
+        if me and me not in speakers:
+            speakers[me] = "我"
+            self.store.update(mid, speakers=speakers)
+
+    def revise(self,mid: str, answers: list[dict]) -> None:
         """依使用者對待確認題目的回答修正紀錄（在呼叫端的執行緒執行）"""
         s: Settings = self.settings()
         meeting = self.store.load(mid)

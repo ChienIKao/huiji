@@ -11,7 +11,7 @@ Windows 上的會議紀錄工具：錄下會議（麥克風＋電腦聲音），
 - **錄音**：麥克風＋電腦聲音（線上會議）、只錄麥克風（實體會議）、只錄電腦聲音。可以暫停、標記重點（Ctrl+B），也可以邊錄邊記筆記，每換一行會自動加上錄音時間
 - **匯入**：音檔或影片（m4a、mp3、wav、mp4、mkv…），可以拿以前用 OBS 錄的檔案
 - **轉錄**：[Faster-Whisper-XXL](https://github.com/Purfview/whisper-standalone-win)，逐段偵測語言，中英夾雜也不會漏句；OpenCC 轉成台灣繁體
-- **分辨說話者**：pyannote 3.1，點一下說話者就能改名
+- **分辨說話者**：pyannote 3.1，點一下說話者就能改名。用「麥克風＋電腦聲音」錄的會議，會比對兩軌音量，自動把你自己標成「我」（AI 整理待辦時就知道哪些是你的）
 - **會議紀錄**：摘要、決議、待辦（負責人、期限）、未決問題、議題詳細。每一條都附時間點，點一下就跳到錄音的那一段
 - **待確認**：AI 不確定的人名、專有名詞、期限會列出來，回答後 AI 會修正整份紀錄
 - **範本**：一般會議、一對一、訪談、課堂／演講、腦力激盪
@@ -63,6 +63,7 @@ python -m venv .venv
 .venv\Scripts\python main.py           # 開視窗
 .venv\Scripts\python main.py --debug   # 開視窗＋開發者工具
 .venv\Scripts\python main.py --dev     # 不開視窗，用瀏覽器開 http://127.0.0.1:8765/?dev
+.venv\Scripts\python -m unittest discover tests   # 測試
 ```
 
 ```
@@ -71,6 +72,7 @@ huiji/
   recorder.py        WASAPI 錄音（麥克風＋loopback 分軌）
   transcribe.py      ffmpeg 混音 → Faster-Whisper-XXL → OpenCC
   notes.py           提示詞、範本、呼叫 claude / codex CLI、匯出 Markdown
+  selfvoice.py       比對麥克風／電腦聲音兩軌，找出哪個說話者是「我」
   jobs.py            背景工作佇列（轉錄 → 整理）
   store.py           會議資料夾的讀寫、搜尋、垃圾桶
   api.py             介面呼叫的 API
