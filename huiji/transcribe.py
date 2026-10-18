@@ -238,6 +238,22 @@ def subtitle_segments(s: Settings, folder: Path, fallback: list[dict], edited: b
     return segments
 
 
+def to_vtt(segments: list[dict], speakers: dict) -> str:
+    """影片播放時的字幕（WebVTT）：說話者換人時才加名字，看起來比較清爽"""
+    from .notes import speaker_name
+
+    blocks = ["WEBVTT", ""]
+    last = None
+    for seg in segments:
+        name = speaker_name(seg.get("speaker"), speakers)
+        text = f"{name}：{seg['text']}" if name and seg.get("speaker") != last else seg["text"]
+        last = seg.get("speaker")
+        start = srt_time(seg["start"]).replace(",", ".")
+        end = srt_time(max(seg["end"], seg["start"] + 0.5)).replace(",", ".")
+        blocks += [f"{start} --> {end}", text, ""]
+    return "\n".join(blocks)
+
+
 def to_srt(segments: list[dict], speakers: dict, with_speaker: bool = True) -> str:
     from .notes import speaker_name
 

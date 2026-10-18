@@ -44,6 +44,14 @@ class Api:
     def _folder(self, mid: str) -> Path:
         return self._store.folder(mid)
 
+    def _subtitles(self, mid: str) -> str:
+        """影片播放時的 CC 字幕，依目前的逐字稿與說話者名稱產生"""
+        m = self._store.load(mid)
+        segs = self._store.read_json(mid, "transcript.json") or []
+        subs = transcribe.subtitle_segments(self._settings, self._store.folder(mid), segs,
+                                            edited=bool(m.get("transcript_edited")))
+        return transcribe.to_vtt(subs, m.get("speakers", {}))
+
     # ---- 狀態（介面每 0.5 秒輪詢） ----
     def state(self) -> dict:
         rec = None

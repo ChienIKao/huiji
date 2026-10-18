@@ -57,6 +57,9 @@ const S = {
   recDir: localStorage.getItem("recDir") || "",
   trEditing: false,
   showVideo: localStorage.getItem("showVideo") !== "0",
+  videoLayout: localStorage.getItem("videoLayout") || "top",
+  showCC: localStorage.getItem("showCC") === "1",
+  zoom: parseFloat(localStorage.getItem("zoom")) || 1,
   editing: false,
   trFilter: "",
   trSpeaker: "",
@@ -157,7 +160,7 @@ function renderDetail(changed) {
   const { meeting: m } = S.data;
   const isRec = S.recording && S.recording.id === m.id;
   $("#crumb").textContent = m.title;
-  $("#title").textContent = m.title;
+  $("#crumb").title = `${m.title}\n點一下改名`;
   renderMeta();
   renderTemplatePicker();
 
@@ -168,6 +171,10 @@ function renderDetail(changed) {
   $("#videoToggle").classList.toggle("hidden", !S.data.video);
   $("#videoToggle").classList.toggle("on", S.showVideo);
   $("#videoPane").classList.toggle("hidden", isRec || !S.data.video || !S.showVideo);
+  $("#mediaSplit").classList.toggle("hidden", isRec);
+  if (changed) $("#contentWrap").scrollTop = 0;
+  $("#videoSplit").classList.toggle("hidden", $("#videoPane").classList.contains("hidden"));
+  applyVideoLayout();
   if (isRec) { renderRecPanel(changed); return; }
 
   const review = S.data.notes?.reviewItems?.length || 0;
@@ -205,6 +212,7 @@ async function renameSpeaker(id) {
   S.data.meeting = await call("update_meeting", m.id, { speakers });
   renderMeta();
   renderContent();
+  setupSubtitles();
 }
 
 function renderTemplatePicker() {
@@ -222,7 +230,7 @@ $("#templateSel").addEventListener("change", async (e) => {
   }
 });
 
-$("#editTitle").addEventListener("click", () => renameMeeting(S.selected));
+$("#crumb").addEventListener("click", () => renameMeeting(S.selected));
 
 // ---------- 分頁 ----------
 $("#tabs").addEventListener("click", (e) => {
@@ -569,6 +577,7 @@ const audio = $("#audio");
 function setupPlayer() {
   if (!hasMedia()) { audio.removeAttribute("src"); return; }
   audio.src = `/media/${S.selected}/${S.data.video || "audio.m4a"}`;
+  setupSubtitles();
   audio.playbackRate = +$("#rateSel").value;
   $("#trackFill").style.width = "0";
   $("#curTime").textContent = "00:00";
@@ -1081,6 +1090,14 @@ async function showSettings(focus) {
       <div class="field"><label class="lbl">OpenCC 位置（簡轉繁，選用） ${status(env.opencc, "找到了", "找不到，逐字稿會是簡體")}</label>${text("opencc_exe", s.opencc_exe)}</div>
     </section>
 
+    <section class="card" id="set-view"><h3>顯示</h3>
+      <div class="grid2">
+        <div class="field"><label class="lbl">介面大小</label><select id="zoomSel">${[0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5].map((z) =>
+          `<option value="${z}" ${z === S.zoom ? "selected" : ""}>${Math.round(z * 100)}%${z === 1 ? "（預設）" : ""}</option>`).join("")}</select></div>
+      </div>
+      <p class="help">也可以按 Ctrl＋加號／減號，或按住 Ctrl 滾動滑鼠滾輪；Ctrl＋0 還原。<br>側欄、影片、錄音時的筆記欄，都可以拖曳邊界調整大小，雙擊邊界還原。影片右上角可以切換放上方或右邊、開關字幕（快捷鍵 C）、全螢幕（快捷鍵 F）。</p>
+    </section>
+
     <section class="card" id="set-data"><h3>資料</h3>
       <div class="field"><label class="lbl">會議預設存放的資料夾</label>
         <div class="input-row">${text("data_dir", s.data_dir)}<button class="btn" id="openDataDir">開啟</button></div>
@@ -1102,6 +1119,7 @@ async function showSettings(focus) {
   };
   $("#modelCustom").onchange = (e) => saveModel(e.target.value.trim());
   $("#effortSel").onchange = async (e) => { await call("save_settings", { llm_effort: e.target.value }); toast("已儲存", 1200); };
+  $("#zoomSel").onchange = (e) => applyZoom(parseFloat(e.target.value));
   $("#setSource").onclick = async () => {
     S.screenSource = s.screen_source;
     const name = await pickSource();
@@ -1169,7 +1187,9 @@ function confirmBox(title, text) {
 }
 function popMenu(anchor, items) {
   document.querySelector(".menu-pop")?.remove();
-  const r = anchor.getBoundingClientRect();
+  const z = S.zoom;
+  const vr = anchor.getBoundingClientRect();
+  const r = { left: vr.left / z, right: vr.right / z, top: vr.top / z, bottom: vr.bottom / z };
   const menu = document.createElement("div");
   menu.className = "menu menu-pop";
   menu.style.left = `${r.left}px`;
@@ -1191,14 +1211,153 @@ function popMenu(anchor, items) {
     menu.appendChild(b);
   });
   document.body.appendChild(menu);
-  const mr = menu.getBoundingClientRect();
-  if (mr.right > window.innerWidth - 8) menu.style.left = `${Math.max(8, r.right - mr.width)}px`;
-  if (mr.bottom > window.innerHeight - 8) menu.style.top = `${Math.max(8, r.top - mr.height - 4)}px`;
+  const vm = menu.getBoundingClientRect();
+  const mw = vm.width / z, mh = vm.height / z, W = window.innerWidth / z, H = window.innerHeight / z;
+  if (r.left + mw > W - 8) menu.style.left = `${Math.max(8, r.right - mw)}px`;
+  if (r.bottom + 4 + mh > H - 8) menu.style.top = `${Math.max(8, r.top - mh - 4)}px`;
   setTimeout(() => document.addEventListener("click", () => menu.remove(), { once: true }));
 }
 
+// ---------- 拖曳調整區塊大小 ----------
+// get()：目前大小；set(px)：套用大小；invert：往左／上拖是變大（例如放在右邊的畫面）
+function makeSplitter(handle, { axis, get, set, min, max, invert = false, key }) {
+  handle.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    const ax = typeof axis === "function" ? axis() : axis;
+    const inv = typeof invert === "function" ? invert() : invert;
+    const start = ax === "x" ? e.clientX : e.clientY;
+    const startSize = get();
+    handle.classList.add("dragging");
+    document.body.classList.add("resizing", ax === "x" ? "col" : "row");
+    const move = (ev) => {
+      const delta = ((ax === "x" ? ev.clientX : ev.clientY) - start) / S.zoom;
+      const size = Math.round(Math.min(max(), Math.max(min, startSize + (inv ? -delta : delta))));
+      set(size);
+    };
+    const up = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.classList.remove("dragging");
+      document.body.classList.remove("resizing", "col", "row");
+      localStorage.setItem(key(), String(get()));
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up, { once: true });
+  });
+  // 雙擊分隔線：還原預設大小
+  handle.addEventListener("dblclick", () => { localStorage.removeItem(key()); set(null); });
+}
+const px = (el, prop) => parseFloat(getComputedStyle(el)[prop]);
+const innerW = () => window.innerWidth / S.zoom, innerH = () => window.innerHeight / S.zoom;
+
+makeSplitter($("#sideSplit"), {
+  axis: "x", min: 200, max: () => Math.min(520, innerW() - 600), key: () => "size.side",
+  get: () => px($("#sidebar"), "width"), set: (v) => { $("#sidebar").style.width = v == null ? "" : `${v}px`; },
+});
+makeSplitter($("#recSplit"), {
+  axis: "x", min: 260, max: () => innerW() - px($("#sidebar"), "width") - 300, invert: true, key: () => "size.recNotes",
+  get: () => px($(".rec-right"), "width"), set: (v) => { $(".rec-right").style.width = v == null ? "" : `${v}px`; },
+});
+makeSplitter($("#videoSplit"), {
+  axis: () => (S.videoLayout === "side" ? "x" : "y"), min: 120,
+  max: () => S.videoLayout === "side" ? $("#mediaSplit").clientWidth - 380 : $("#mediaSplit").clientHeight - 140,
+  invert: () => S.videoLayout === "side", key: () => `size.video.${S.videoLayout}`,
+  get: () => S.videoLayout === "side" ? px($("#videoPane"), "width") : px($("#videoPane"), "height"),
+  set: (v) => {
+    const pane = $("#videoPane");
+    pane.style.width = S.videoLayout === "side" && v != null ? `${v}px` : "";
+    pane.style.height = S.videoLayout === "top" && v != null ? `${v}px` : "";
+  },
+});
+
+function restoreSizes() {
+  const side = localStorage.getItem("size.side");
+  if (side) $("#sidebar").style.width = `${side}px`;
+  const rec = localStorage.getItem("size.recNotes");
+  if (rec) $(".rec-right").style.width = `${rec}px`;
+}
+
+function applyVideoLayout() {
+  const side = S.videoLayout === "side";
+  $("#mediaSplit").classList.toggle("side", side);
+  const split = $("#videoSplit");
+  split.classList.toggle("v", side);
+  split.classList.toggle("h", !side);
+  $("#vLayout").title = side ? "畫面改放上方" : "畫面改放右邊";
+  const pane = $("#videoPane");
+  const saved = localStorage.getItem(`size.video.${S.videoLayout}`);
+  pane.style.width = side && saved ? `${saved}px` : "";
+  pane.style.height = !side && saved ? `${saved}px` : "";
+}
+$("#vLayout").addEventListener("click", () => {
+  S.videoLayout = S.videoLayout === "side" ? "top" : "side";
+  localStorage.setItem("videoLayout", S.videoLayout);
+  applyVideoLayout();
+});
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else $("#videoPane").requestFullscreen?.();
+}
+$("#vFull").addEventListener("click", toggleFullscreen);
+
+// ---------- CC 字幕（用逐字稿產生，影片播放時可以開關） ----------
+function setupSubtitles() {
+  audio.querySelectorAll("track").forEach((t) => t.remove());
+  const can = !!(S.data?.video && S.data.transcript?.length);
+  $("#ccBtn").classList.toggle("hidden", !can);
+  $("#vCC").classList.toggle("hidden", !can);
+  if (!can) return;
+  const track = document.createElement("track");
+  track.kind = "subtitles";
+  track.label = "逐字稿";
+  track.srclang = "zh-Hant";
+  // 改過逐字稿或說話者名稱後重新載入
+  track.src = `/media/${S.selected}/subtitles.vtt?v=${Date.now()}`;
+  audio.appendChild(track);
+  applyCC();
+}
+function applyCC() {
+  for (const t of audio.textTracks) t.mode = S.showCC ? "showing" : "hidden";
+  $("#ccBtn").classList.toggle("on", S.showCC);
+  $("#vCC").classList.toggle("on", S.showCC);
+}
+function toggleCC() {
+  S.showCC = !S.showCC;
+  localStorage.setItem("showCC", S.showCC ? "1" : "0");
+  applyCC();
+  toast(S.showCC ? "字幕開啟" : "字幕關閉", 1000);
+}
+$("#ccBtn").addEventListener("click", toggleCC);
+$("#vCC").addEventListener("click", toggleCC);
+audio.addEventListener("dblclick", toggleFullscreen);
+audio.addEventListener("click", () => (audio.paused ? audio.play() : audio.pause()));
+
+// ---------- 介面大小（Ctrl ＋／－／0、Ctrl＋滾輪） ----------
+function applyZoom(z, announce = false) {
+  S.zoom = Math.round(Math.min(1.6, Math.max(0.7, z)) * 100) / 100;
+  document.body.style.zoom = S.zoom;
+  localStorage.setItem("zoom", String(S.zoom));
+  if (announce) toast(`介面大小 ${Math.round(S.zoom * 100)}%`, 1200);
+  const sel = $("#zoomSel");
+  if (sel) sel.value = String(S.zoom);
+}
+document.addEventListener("wheel", (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  applyZoom(S.zoom + (e.deltaY < 0 ? 0.1 : -0.1), true);
+}, { passive: false });
+
 // ---------- 快捷鍵 ----------
 document.addEventListener("keydown", (e) => {
+  if (e.ctrlKey && !e.shiftKey && (e.key === "=" || e.key === "+")) { e.preventDefault(); applyZoom(S.zoom + 0.1, true); return; }
+  if (e.ctrlKey && !e.shiftKey && e.key === "-") { e.preventDefault(); applyZoom(S.zoom - 0.1, true); return; }
+  if (e.ctrlKey && !e.shiftKey && e.key === "0") { e.preventDefault(); applyZoom(1, true); return; }
+  if (e.key.toLowerCase() === "f" && !e.ctrlKey && !e.target.closest("input,textarea,[contenteditable=true],select") && S.data?.video && !S.recording) {
+    e.preventDefault(); toggleFullscreen(); return;
+  }
+  if (e.key.toLowerCase() === "c" && !e.ctrlKey && !e.target.closest("input,textarea,[contenteditable=true],select") && S.data?.video && !S.recording) {
+    e.preventDefault(); toggleCC(); return;
+  }
   if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); S.recording ? stopRecording() : startRecording(); }
   else if (e.ctrlKey && e.key.toLowerCase() === "b" && S.recording) { e.preventDefault(); addMark(); }
   else if (e.key === "Escape") { if (S.pickerClose) { const f = S.pickerClose; S.pickerClose = null; f(); } else closeModal(); }
@@ -1251,6 +1410,8 @@ async function checkUpdate() {
 // ---------- 啟動 ----------
 async function init() {
   api = window.pywebview.api;
+  document.body.style.zoom = S.zoom;
+  restoreSizes();
   if (new URLSearchParams(location.search).has("mini")) return initMini();
   if (new URLSearchParams(location.search).has("dev")) $("#miniBtn").classList.add("hidden");
   S.templates = await api.templates();

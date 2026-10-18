@@ -15,7 +15,7 @@ MEDIA_TYPES = {".m4a": "audio/mp4", ".mp4": "video/mp4", ".m4v": "video/mp4", ".
                ".webm": "video/webm"}
 
 
-def start(folder_of, dev_api=None, port: int = 0) -> int:
+def start(folder_of, dev_api=None, port: int = 0, subtitles_of=None) -> int:
     """dev_api：開發模式才傳入，讓一般瀏覽器可以用 POST /api/<方法> 呼叫介面 API"""
 
     class Handler(BaseHTTPRequestHandler):
@@ -40,6 +40,19 @@ def start(folder_of, dev_api=None, port: int = 0) -> int:
 
         def do_GET(self):
             path = unquote(urlparse(self.path).path)
+            sub = re.match(r"^/media/([\w-]+)/subtitles\.vtt$", path)
+            if sub and subtitles_of:
+                try:
+                    data = subtitles_of(sub.group(1)).encode("utf-8")
+                except (KeyError, OSError, ValueError):
+                    return self.send_error(404)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/vtt; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+                return
             m = MEDIA_NAME.match(path)
             if m:
                 try:

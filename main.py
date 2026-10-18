@@ -20,16 +20,16 @@ def main() -> None:
     if "--dev" in sys.argv:
         # 開發模式：不開視窗，用瀏覽器開 http://127.0.0.1:8765/?dev
         import time
-        port = server.start(api._folder, dev_api=api, port=8765)
+        port = server.start(api._folder, dev_api=api, port=8765, subtitles_of=api._subtitles)
         print(f"http://127.0.0.1:{port}/?dev", flush=True)
         while True:
             time.sleep(3600)
 
     import webview
 
-    port = server.start(api._folder)
+    port = server.start(api._folder, subtitles_of=api._subtitles)
     url = f"http://127.0.0.1:{port}/"
-    window = webview.create_window("會記 Huiji", url, js_api=api,
+    window = webview.create_window("會記 Huiji", url, js_api=api, text_select=True,
                                    width=1280, height=820, min_size=(900, 600), background_color="#202020")
     api._attach(window, url)
 
