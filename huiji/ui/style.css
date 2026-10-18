@@ -454,8 +454,10 @@ body.resizing.row { cursor: row-resize; }
 .cc-btn { height: 32px; min-width: 38px; border: 0; border-radius: 8px; background: rgba(0,0,0,.55); color: #fff; font-weight: 700; font-size: 12px; letter-spacing: .5px; }
 .cc-btn:hover { background: rgba(0,0,0,.8); }
 .cc-btn.on { background: #fff; color: #000; }
-.video-pane video::cue { font-family: var(--font); font-size: var(--cue-size, 18px); line-height: 1.4; background: rgba(0,0,0,.72); color: #fff; }
-.video-pane:fullscreen video::cue { font-size: calc(var(--cue-size, 18px) * 1.6); }
+.cc-overlay { position: absolute; left: 50%; bottom: 6%; transform: translateX(-50%); max-width: 86%; width: max-content;
+  text-align: center; white-space: pre-line; pointer-events: none; font-family: var(--font); font-size: var(--cue-size, 18px);
+  line-height: 1.45; color: #fff; background: rgba(0,0,0,.72); padding: .15em .55em; border-radius: 4px; }
+.video-pane:fullscreen .cc-overlay { font-size: calc(var(--cue-size, 18px) * 1.6); }
 
 /* ---------- 可以用滑鼠反白文字；按鈕、選單等介面元素不行，避免點一下就反白 ---------- */
 button, .tabs, .side-toolbar, .side-nav, .player, .menu, .rec-bar, .splitter, .seg, .switch, .lbl, .meta, #meetingList .s {

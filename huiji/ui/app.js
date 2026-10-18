@@ -1327,10 +1327,22 @@ function setupSubtitles() {
   // 改過逐字稿或說話者名稱後重新載入
   track.src = `/media/${S.selected}/subtitles.vtt?v=${Date.now()}`;
   audio.appendChild(track);
+  // 瀏覽器內建的字幕不能調大小（WebView2 會照影片高度自己決定），
+  // 所以字幕軌設成 hidden 只拿時間資料，字自己畫在影片上
+  track.track.mode = "hidden";
+  track.track.addEventListener("cuechange", renderCue);
   applyCC();
 }
+function renderCue() {
+  const t = audio.textTracks[0];
+  const text = t?.activeCues ? [...t.activeCues].map((c) => c.text).join("\n") : "";
+  const el = $("#ccText");
+  el.textContent = text;
+  el.classList.toggle("hidden", !S.showCC || !text);
+}
 function applyCC() {
-  for (const t of audio.textTracks) t.mode = S.showCC ? "showing" : "hidden";
+  for (const t of audio.textTracks) t.mode = "hidden";
+  renderCue();
   $("#ccBtn").classList.toggle("on", S.showCC);
   $("#vCC").classList.toggle("on", S.showCC);
 }
