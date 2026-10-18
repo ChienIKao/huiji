@@ -56,8 +56,7 @@ const S = {
   recScreen: localStorage.getItem("recScreen") === "1",
   recDir: localStorage.getItem("recDir") || "",
   trEditing: false,
-  showVideo: localStorage.getItem("showVideo") !== "0",
-  videoLayout: localStorage.getItem("videoLayout") || "top",
+  videoSide: localStorage.getItem("videoSide") || "transcript",
   showCC: localStorage.getItem("showCC") === "1",
   zoom: parseFloat(localStorage.getItem("zoom")) || 1,
   editing: false,
@@ -67,6 +66,8 @@ const S = {
 };
 const BUSY = ["queued", "transcribing", "summarizing"];
 const hasMedia = () => !!(S.data && (S.data.has_audio || S.data.video));
+// 目前內容區顯示哪一種：影片分頁時是右側欄選的（逐字稿／摘要／詳細）
+const view = () => (S.tab === "video" ? S.videoSide : S.tab);
 
 // ---------- 會議列表 ----------
 async function loadList() {
@@ -168,13 +169,20 @@ function renderDetail(changed) {
   $("#recPanel").classList.toggle("hidden", !isRec);
   $("#content").classList.toggle("hidden", isRec);
   $("#player").classList.toggle("hidden", isRec || !hasMedia());
-  $("#videoToggle").classList.toggle("hidden", !S.data.video);
-  $("#videoToggle").classList.toggle("on", S.showVideo);
-  $("#videoPane").classList.toggle("hidden", isRec || !S.data.video || !S.showVideo);
+  if (S.tab === "video" && !S.data.video) S.tab = "summary";
+  const videoTab = !isRec && S.tab === "video";
+  $("#videoTab").classList.toggle("hidden", !S.data.video);
+  $("#videoPane").classList.toggle("hidden", !videoTab);
+  $("#videoSplit").classList.toggle("hidden", !videoTab);
   $("#mediaSplit").classList.toggle("hidden", isRec);
+  $("#mediaSplit").classList.toggle("video-tab", videoTab);
+  $("#sideTabs").classList.toggle("hidden", !videoTab);
+  $("#ccBtn").classList.toggle("hidden", !videoTab || !S.data.transcript?.length);
+  $("#metaRow").classList.toggle("hidden", videoTab);
+  for (const b of document.querySelectorAll("#sideTabs button")) b.classList.toggle("active", b.dataset.side === S.videoSide);
+  const sideW = localStorage.getItem("size.videoSidebar");
+  $("#contentWrap").style.width = videoTab && sideW ? `${sideW}px` : "";
   if (changed) $("#contentWrap").scrollTop = 0;
-  $("#videoSplit").classList.toggle("hidden", $("#videoPane").classList.contains("hidden"));
-  applyVideoLayout();
   if (isRec) { renderRecPanel(changed); return; }
 
   const review = S.data.notes?.reviewItems?.length || 0;
@@ -259,20 +267,20 @@ function renderContent() {
   const el = $("#content");
   const { meeting: m, notes, transcript } = S.data;
 
-  if (BUSY.includes(m.status) && !(S.tab === "transcript" && transcript) && !(S.tab === "notes")) {
+  if (BUSY.includes(m.status) && !(view() === "transcript" && transcript) && !(view() === "notes")) {
     el.innerHTML = `<div class="status-card"><div class="spinner"></div><h3>${esc(m.progress || "處理中")}</h3>
       <p>${m.status === "transcribing" ? "轉錄需要一點時間，可以先去做別的事。" : m.status === "queued" ? "等前一場會議處理完就會開始。" : "AI 正在整理會議紀錄，大約需要 30 秒到 2 分鐘。"}</p>
       <button class="btn" data-act="cancel">取消</button></div>`;
     return;
   }
-  if (m.status === "error" && S.tab !== "notes" && !(S.tab === "transcript" && transcript)) {
+  if (m.status === "error" && view() !== "notes" && !(view() === "transcript" && transcript)) {
     el.innerHTML = `<div class="status-card"><h3>處理失敗</h3><pre>${esc(m.error)}</pre>
       <button class="btn primary" data-act="retry">重試</button></div>`;
     return;
   }
 
-  if (S.tab === "transcript") return renderTranscript();
-  if (S.tab === "notes") return renderNotesTab();
+  if (view() === "transcript") return renderTranscript();
+  if (view() === "notes") return renderNotesTab();
 
   if (transcript && !transcript.length) {
     el.innerHTML = `<div class="status-card"><h3>沒有辨識到說話內容</h3>
@@ -290,7 +298,7 @@ function renderContent() {
     ? `<button class="link" data-act="cancel-edit">取消</button><button class="link" data-act="save-edit">儲存</button>`
     : `<button class="link" data-act="copy-md">複製 Markdown</button><button class="link" data-act="edit"><span class="ico edit"></span> 編輯</button>`}</div>`;
 
-  if (S.tab === "summary") {
+  if (view() === "summary") {
     let html = tools;
     if (notes.summary?.length) html += `<h2>摘要</h2>${itemList(notes.summary, "summary")}`;
     if (notes.decisions?.length) html += `<h2>決議</h2>${itemList(notes.decisions, "decisions")}`;
@@ -303,7 +311,7 @@ function renderContent() {
     if (notes.openQuestions?.length) html += `<h2>未決問題</h2>${itemList(notes.openQuestions, "openQuestions")}`;
     if (html === tools) html += `<p class="muted">這個範本沒有摘要段落，請看「詳細」。</p>`;
     el.innerHTML = html;
-  } else if (S.tab === "details") {
+  } else if (view() === "details") {
     let html = tools;
     for (const [ci, c] of (notes.custom || []).entries())
       if (c.items?.length) html += `<h2>${esc(c.title)}</h2>${itemList(c.items, `custom.${ci}.items`)}`;
@@ -314,7 +322,7 @@ function renderContent() {
     }
     if (html === tools) html += `<p class="muted">這個範本沒有詳細段落。</p>`;
     el.innerHTML = html;
-  } else if (S.tab === "review") {
+  } else if (view() === "review") {
     renderReview();
   }
 }
@@ -609,15 +617,19 @@ $("#track").addEventListener("click", (e) => {
   if (d) seek(((e.clientX - r.left) / r.width) * d, false);
 });
 $("#rateSel").addEventListener("change", (e) => { audio.playbackRate = +e.target.value; });
-$("#videoToggle").addEventListener("click", () => {
-  S.showVideo = !S.showVideo;
-  localStorage.setItem("showVideo", S.showVideo ? "1" : "0");
+$("#sideTabs").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-side]");
+  if (!b) return;
+  S.videoSide = b.dataset.side;
+  localStorage.setItem("videoSide", S.videoSide);
+  S.editing = false;
+  $("#contentWrap").scrollTop = 0;
   renderDetail(false);
 });
 
 let lastNow = -1;
 function highlightNow(force) {
-  if (S.tab !== "transcript" || !S.data?.transcript) return;
+  if (view() !== "transcript" || !S.data?.transcript) return;
   const t = audio.currentTime;
   const tr = S.data.transcript;
   let idx = -1;
@@ -805,7 +817,7 @@ async function poll() {
           const wasBusy = BUSY.includes(S.data.meeting.status);
           S.data = await api.get_meeting(S.selected);
           if (wasBusy && S.data.meeting.status === "done" && S.data.notes && S.tab === "transcript" && !audio.currentTime) S.tab = "summary";
-          if (document.activeElement?.closest?.("#content") && S.tab !== "transcript") renderMeta();
+          if (document.activeElement?.closest?.("#content") && view() !== "transcript") renderMeta();
           else renderDetail(false);
           const want = S.data.video || (S.data.has_audio ? "audio.m4a" : "");
           if (want && !audio.src.endsWith("/" + want)) setupPlayer();
@@ -1095,7 +1107,7 @@ async function showSettings(focus) {
         <div class="field"><label class="lbl">介面大小</label><select id="zoomSel">${[0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5].map((z) =>
           `<option value="${z}" ${z === S.zoom ? "selected" : ""}>${Math.round(z * 100)}%${z === 1 ? "（預設）" : ""}</option>`).join("")}</select></div>
       </div>
-      <p class="help">也可以按 Ctrl＋加號／減號，或按住 Ctrl 滾動滑鼠滾輪；Ctrl＋0 還原。<br>側欄、影片、錄音時的筆記欄，都可以拖曳邊界調整大小，雙擊邊界還原。影片右上角可以切換放上方或右邊、開關字幕（快捷鍵 C）、全螢幕（快捷鍵 F）。</p>
+      <p class="help">也可以按 Ctrl＋加號／減號，或按住 Ctrl 滾動滑鼠滾輪；Ctrl＋0 還原。<br>側欄、影片分頁的右側欄、錄音時的筆記欄，都可以拖曳邊界調整大小，雙擊邊界還原。<br>有錄影的會議會多一個「影片」分頁，右側可以切換逐字稿、摘要、詳細；影片右上角可以開關字幕（C）、全螢幕（F）。</p>
     </section>
 
     <section class="card" id="set-data"><h3>資料</h3>
@@ -1258,16 +1270,10 @@ makeSplitter($("#recSplit"), {
   axis: "x", min: 260, max: () => innerW() - px($("#sidebar"), "width") - 300, invert: true, key: () => "size.recNotes",
   get: () => px($(".rec-right"), "width"), set: (v) => { $(".rec-right").style.width = v == null ? "" : `${v}px`; },
 });
+// 影片分頁：影片在左、右側欄（逐字稿／摘要／詳細）可以拖曳調整寬度
 makeSplitter($("#videoSplit"), {
-  axis: () => (S.videoLayout === "side" ? "x" : "y"), min: 120,
-  max: () => S.videoLayout === "side" ? $("#mediaSplit").clientWidth - 380 : $("#mediaSplit").clientHeight - 140,
-  invert: () => S.videoLayout === "side", key: () => `size.video.${S.videoLayout}`,
-  get: () => S.videoLayout === "side" ? px($("#videoPane"), "width") : px($("#videoPane"), "height"),
-  set: (v) => {
-    const pane = $("#videoPane");
-    pane.style.width = S.videoLayout === "side" && v != null ? `${v}px` : "";
-    pane.style.height = S.videoLayout === "top" && v != null ? `${v}px` : "";
-  },
+  axis: "x", min: 300, max: () => $("#mediaSplit").clientWidth - 320, invert: true, key: () => "size.videoSidebar",
+  get: () => px($("#contentWrap"), "width"), set: (v) => { $("#contentWrap").style.width = v == null ? "" : `${v}px`; },
 });
 
 function restoreSizes() {
@@ -1277,23 +1283,6 @@ function restoreSizes() {
   if (rec) $(".rec-right").style.width = `${rec}px`;
 }
 
-function applyVideoLayout() {
-  const side = S.videoLayout === "side";
-  $("#mediaSplit").classList.toggle("side", side);
-  const split = $("#videoSplit");
-  split.classList.toggle("v", side);
-  split.classList.toggle("h", !side);
-  $("#vLayout").title = side ? "畫面改放上方" : "畫面改放右邊";
-  const pane = $("#videoPane");
-  const saved = localStorage.getItem(`size.video.${S.videoLayout}`);
-  pane.style.width = side && saved ? `${saved}px` : "";
-  pane.style.height = !side && saved ? `${saved}px` : "";
-}
-$("#vLayout").addEventListener("click", () => {
-  S.videoLayout = S.videoLayout === "side" ? "top" : "side";
-  localStorage.setItem("videoLayout", S.videoLayout);
-  applyVideoLayout();
-});
 function toggleFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen();
   else $("#videoPane").requestFullscreen?.();
@@ -1304,7 +1293,6 @@ $("#vFull").addEventListener("click", toggleFullscreen);
 function setupSubtitles() {
   audio.querySelectorAll("track").forEach((t) => t.remove());
   const can = !!(S.data?.video && S.data.transcript?.length);
-  $("#ccBtn").classList.toggle("hidden", !can);
   $("#vCC").classList.toggle("hidden", !can);
   if (!can) return;
   const track = document.createElement("track");
@@ -1425,7 +1413,6 @@ async function init() {
   updateTrashLabel();
   // 網址參數（開發與截圖用）：?m=<會議 id>&tab=summary 或 ?view=settings
   const q = new URLSearchParams(location.search);
-  if (q.get("video") === "0") S.showVideo = false;
   if (S.recording) await select(S.recording.id);
   else if (q.get("view") === "settings") await showSettings();
   else if (q.get("m")) { S.tab = q.get("tab") || "summary"; await select(q.get("m"), true); }

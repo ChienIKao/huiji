@@ -435,14 +435,19 @@ body.resizing.row { cursor: row-resize; }
 /* 畫面在上方或右邊 */
 .media-split { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .media-split > .content { flex: 1; min-width: 0; min-height: 0; }
-.media-split.side { flex-direction: row-reverse; }
-.media-split.side .video-pane { height: auto; width: 45%; min-width: 240px; }
+/* 影片分頁：影片在左邊佔滿，右側欄可以切換逐字稿／摘要／詳細 */
+.media-split.video-tab { flex-direction: row; }
+.media-split.video-tab .video-pane { flex: 1; height: auto; min-width: 320px; }
+.media-split.video-tab > .content-wrap { flex: none; width: 420px; background: var(--bg); }
+.side-tabs { position: sticky; top: 0; z-index: 3; display: flex; gap: 2px; padding: 10px 14px; background: var(--bg); border-bottom: 1px solid var(--line); }
+.side-tabs button { flex: 1; border: 0; background: transparent; color: var(--text-2); padding: 6px 0; border-radius: 8px; }
+.side-tabs button:hover { color: var(--text); background: var(--panel); }
+.side-tabs button.active { background: var(--panel-2); color: var(--text); }
+.media-split.video-tab .tr-tools { top: 51px; }
 .video-tools { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; opacity: 0; transition: opacity .15s; }
 .video-pane:hover .video-tools { opacity: 1; }
 .video-tools .icon-btn { background: rgba(0,0,0,.55); color: #fff; }
 .video-tools .icon-btn:hover { background: rgba(0,0,0,.8); color: #fff; }
-#vLayout { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2'%3E%3Crect x='3' y='4' width='18' height='16' rx='2'/%3E%3Cpath d='M14 4v16'/%3E%3C/svg%3E"); }
-.media-split.side #vLayout { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2'%3E%3Crect x='3' y='4' width='18' height='16' rx='2'/%3E%3Cpath d='M3 12h18'/%3E%3C/svg%3E"); }
 #vFull { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5'/%3E%3C/svg%3E"); }
 
 /* ---------- CC 字幕 ---------- */

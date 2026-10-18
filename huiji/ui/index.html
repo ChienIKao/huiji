@@ -97,6 +97,7 @@
       <header class="topbar">
         <button class="crumb" id="crumb" title="點一下改名"></button>
         <nav class="tabs" id="tabs">
+          <button data-tab="video" class="hidden" id="videoTab">影片</button>
           <button data-tab="summary">摘要</button>
           <button data-tab="details">詳細</button>
           <button data-tab="transcript">逐字稿</button>
@@ -145,12 +146,14 @@
           <video id="audio" preload="metadata" playsinline></video>
           <div class="video-tools">
             <button class="cc-btn hidden" id="vCC" title="字幕（C）">CC</button>
-            <button class="icon-btn" id="vLayout" title="畫面改放右邊"></button>
             <button class="icon-btn" id="vFull" title="全螢幕（Esc 離開）"></button>
           </div>
         </section>
-        <div class="splitter h hidden" id="videoSplit" title="拖曳調整畫面大小"></div>
+        <div class="splitter v hidden" id="videoSplit" title="拖曳調整右側欄寬度"></div>
         <div class="content-wrap" id="contentWrap">
+          <div class="side-tabs hidden" id="sideTabs">
+            <button data-side="transcript">逐字稿</button><button data-side="summary">摘要</button><button data-side="details">詳細</button>
+          </div>
           <div class="meta-row" id="metaRow">
             <div class="meta" id="meta"></div>
             <label class="select"><span class="ico doc"></span><select id="templateSel"></select></label>
@@ -168,7 +171,6 @@
         </div>
         <span class="time" id="durTime">00:00</span>
         <button class="btn small hidden" id="ccBtn" title="字幕（C）">字幕</button>
-        <button class="btn small hidden" id="videoToggle" title="顯示／隱藏畫面">畫面</button>
         <select id="rateSel" class="rate">
           <option value="0.75">0.75×</option><option value="1" selected>1×</option>
           <option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option>
