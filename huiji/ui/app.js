@@ -59,6 +59,8 @@ const S = {
   videoSide: localStorage.getItem("videoSide") || "transcript",
   showCC: localStorage.getItem("showCC") === "1",
   zoom: parseFloat(localStorage.getItem("zoom")) || 1,
+  cueSize: parseInt(localStorage.getItem("cueSize"), 10) || 18,
+  settingsSec: localStorage.getItem("settingsSec") || "set-ai",
   editing: false,
   trFilter: "",
   trSpeaker: "",
@@ -1107,7 +1109,11 @@ async function showSettings(focus) {
         <div class="field"><label class="lbl">介面大小</label><select id="zoomSel">${[0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5].map((z) =>
           `<option value="${z}" ${z === S.zoom ? "selected" : ""}>${Math.round(z * 100)}%${z === 1 ? "（預設）" : ""}</option>`).join("")}</select></div>
       </div>
-      <p class="help">也可以按 Ctrl＋加號／減號，或按住 Ctrl 滾動滑鼠滾輪；Ctrl＋0 還原。<br>側欄、影片分頁的右側欄、錄音時的筆記欄，都可以拖曳邊界調整大小，雙擊邊界還原。<br>有錄影的會議會多一個「影片」分頁，右側可以切換逐字稿、摘要、詳細；影片右上角可以開關字幕（C）、全螢幕（F）。</p>
+      <div class="grid2">
+        <div class="field"><label class="lbl">字幕大小（影片的 CC 字幕）</label><select id="cueSel">${[[14, "小"], [18, "中（預設）"], [24, "大"], [30, "特大"]].map(([v, l]) =>
+          `<option value="${v}" ${v === S.cueSize ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+      </div>
+      <p class="help">也可以按 Ctrl＋加號／減號，或按住 Ctrl 滾動滑鼠滾輪；Ctrl＋0 還原。全螢幕時字幕會等比例放大。<br>側欄、影片分頁的右側欄、錄音時的筆記欄，都可以拖曳邊界調整大小，雙擊邊界還原。<br>有錄影的會議會多一個「影片」分頁，右側可以切換逐字稿、摘要、詳細；影片右上角可以開關字幕（C）、全螢幕（F）。</p>
     </section>
 
     <section class="card" id="set-data"><h3>資料</h3>
@@ -1117,11 +1123,20 @@ async function showSettings(focus) {
       <div class="field">${check("check_updates", s.check_updates, "開啟時檢查 GitHub 上有沒有新版本")}</div>
     </section>`;
 
-  if (focus) {
-    const el = $(`#${focus}`);
-    el?.scrollIntoView({ block: "start" });
-    el?.classList.add("flash");
-  }
+  // 左邊目錄、右邊一次只顯示一個區塊
+  const body = $("#settingsBody");
+  const cards = [...body.querySelectorAll(".card")];
+  const layout = document.createElement("div");
+  layout.className = "settings-layout";
+  layout.innerHTML = `<nav class="settings-nav">${cards.map((c) =>
+    `<button data-sec="${c.id}">${esc(c.querySelector("h3").textContent)}</button>`).join("")}</nav><div class="settings-panes"></div>`;
+  cards.forEach((c) => layout.querySelector(".settings-panes").appendChild(c));
+  body.appendChild(layout);
+  showSettingsSection(focus || S.settingsSec);
+  layout.querySelector(".settings-nav").onclick = (e) => {
+    const b = e.target.closest("[data-sec]");
+    if (b) showSettingsSection(b.dataset.sec);
+  };
   $("#openDataDir").onclick = () => api.open_data_dir();
   const saveModel = async (v) => { await call("save_settings", { llm_model: v }); toast("已儲存", 1200); };
   $("#modelSel").onchange = (e) => {
@@ -1132,11 +1147,21 @@ async function showSettings(focus) {
   $("#modelCustom").onchange = (e) => saveModel(e.target.value.trim());
   $("#effortSel").onchange = async (e) => { await call("save_settings", { llm_effort: e.target.value }); toast("已儲存", 1200); };
   $("#zoomSel").onchange = (e) => applyZoom(parseFloat(e.target.value));
+  $("#cueSel").onchange = (e) => { applyCueSize(parseInt(e.target.value, 10)); toast("已儲存", 1200); };
   $("#setSource").onclick = async () => {
     S.screenSource = s.screen_source;
     const name = await pickSource();
     if (name) $("#setSourceName").textContent = name;
   };
+}
+
+function showSettingsSection(id) {
+  if (!$(`#${id}`)) id = "set-ai";
+  S.settingsSec = id;
+  localStorage.setItem("settingsSec", id);
+  for (const c of document.querySelectorAll(".settings-panes .card")) c.classList.toggle("hidden", c.id !== id);
+  for (const b of document.querySelectorAll(".settings-nav button")) b.classList.toggle("active", b.dataset.sec === id);
+  $("#settingsView").scrollTop = 0;
 }
 
 $("#settingsBody").addEventListener("change", async (e) => {
@@ -1309,6 +1334,11 @@ function applyCC() {
   $("#ccBtn").classList.toggle("on", S.showCC);
   $("#vCC").classList.toggle("on", S.showCC);
 }
+function applyCueSize(px) {
+  S.cueSize = px;
+  localStorage.setItem("cueSize", String(px));
+  document.documentElement.style.setProperty("--cue-size", `${px}px`);
+}
 function toggleCC() {
   S.showCC = !S.showCC;
   localStorage.setItem("showCC", S.showCC ? "1" : "0");
@@ -1399,6 +1429,7 @@ async function checkUpdate() {
 async function init() {
   api = window.pywebview.api;
   document.body.style.zoom = S.zoom;
+  document.documentElement.style.setProperty("--cue-size", `${S.cueSize}px`);
   restoreSizes();
   if (new URLSearchParams(location.search).has("mini")) return initMini();
   if (new URLSearchParams(location.search).has("dev")) $("#miniBtn").classList.add("hidden");

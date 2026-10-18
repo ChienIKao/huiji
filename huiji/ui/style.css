@@ -454,8 +454,8 @@ body.resizing.row { cursor: row-resize; }
 .cc-btn { height: 32px; min-width: 38px; border: 0; border-radius: 8px; background: rgba(0,0,0,.55); color: #fff; font-weight: 700; font-size: 12px; letter-spacing: .5px; }
 .cc-btn:hover { background: rgba(0,0,0,.8); }
 .cc-btn.on { background: #fff; color: #000; }
-.video-pane video::cue { font-family: var(--font); font-size: 22px; line-height: 1.4; background: rgba(0,0,0,.72); color: #fff; }
-.video-pane:fullscreen video::cue { font-size: 34px; }
+.video-pane video::cue { font-family: var(--font); font-size: var(--cue-size, 18px); line-height: 1.4; background: rgba(0,0,0,.72); color: #fff; }
+.video-pane:fullscreen video::cue { font-size: calc(var(--cue-size, 18px) * 1.6); }
 
 /* ---------- 可以用滑鼠反白文字；按鈕、選單等介面元素不行，避免點一下就反白 ---------- */
 button, .tabs, .side-toolbar, .side-nav, .player, .menu, .rec-bar, .splitter, .seg, .switch, .lbl, .meta, #meetingList .s {
@@ -483,4 +483,17 @@ button, .tabs, .side-toolbar, .side-nav, .player, .menu, .rec-bar, .splitter, .s
   .tr-row, #trRows.editing .tr-row { grid-template-columns: auto 1fr; gap: 2px 10px; padding: 8px 6px; }
   .tr-row .txt { grid-column: 1 / -1; }
   table.actions td.owner, table.actions td.due { width: auto; }
+}
+
+/* ---------- 設定頁：左邊目錄 ---------- */
+.settings-layout { display: grid; grid-template-columns: 170px 1fr; gap: 24px; align-items: start; }
+.settings-nav { position: sticky; top: 0; display: flex; flex-direction: column; gap: 2px; }
+.settings-nav button { border: 0; background: transparent; color: var(--text-2); text-align: left; padding: 9px 14px; border-radius: 8px; }
+.settings-nav button:hover { background: var(--panel); color: var(--text); }
+.settings-nav button.active { background: var(--panel-2); color: var(--text); font-weight: 600; }
+.settings-panes .card { margin-bottom: 0; }
+#settingsView .page-inner { max-width: 980px; }
+@media (max-width: 900px) {
+  .settings-layout { grid-template-columns: 1fr; }
+  .settings-nav { position: static; flex-direction: row; flex-wrap: wrap; }
 }
