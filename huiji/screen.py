@@ -10,6 +10,7 @@ import base64
 import ctypes
 import ctypes.wintypes as wt
 import io
+import re
 import subprocess
 import threading
 from pathlib import Path
@@ -218,6 +219,55 @@ class ScreenRecorder:
         if self.window:
             return self.window.running()
         return self.proc is not None and self.proc.poll() is None
+
+
+# ---- 匯入的影片轉成播放器能播的 mp4 ----
+# 內建播放器（WebView2）能直接播 mp4／m4v／mov／webm；OBS 預設的 mkv 等格式要先轉
+NEEDS_CONVERSION = {".mkv", ".avi", ".flv", ".wmv", ".ts", ".mts", ".m2ts", ".mpg", ".mpeg", ".3gp", ".vob"}
+
+
+def probe_streams(ffmpeg: str, path: Path) -> tuple[str | None, str | None]:
+    """回傳（影像編碼, 聲音編碼），沒有的話是 None。例如 ("h264", "aac")"""
+    r = subprocess.run([ffmpeg, "-hide_banner", "-i", str(path)], capture_output=True, creationflags=NO_WINDOW)
+    info = r.stderr.decode("utf-8", "replace")
+    video = re.search(r"Stream #\S+.*?: Video: (\w+)", info)
+    audio = re.search(r"Stream #\S+.*?: Audio: (\w+)", info)
+    # 封面圖（attached pic）不算影片
+    if video and "attached pic" in info[video.start():info.find("\n", video.start())]:
+        video = None
+    return (video.group(1) if video else None), (audio.group(1) if audio else None)
+
+
+def needs_conversion(ffmpeg: str, path: Path) -> bool:
+    return path.suffix.lower() in NEEDS_CONVERSION and probe_streams(ffmpeg, path)[0] is not None
+
+
+def make_playable(ffmpeg: str, src: Path, out: Path, duration: float, on_progress=None, on_process=None) -> None:
+    """轉成 mp4：H.264 影像直接搬過去（不重新編碼，很快、畫質不變），其他編碼才重新壓縮；聲音轉成 AAC"""
+    video, audio = probe_streams(ffmpeg, src)
+    vargs = ["-c:v", "copy"] if video == "h264" else [*pick_encoder(ffmpeg), "-pix_fmt", "yuv420p"]
+    aargs = ["-c:a", "aac", "-b:a", "160k"] if audio else ["-an"]
+    tmp = out.with_name(out.stem + ".tmp.mp4")
+    args = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(src), "-map", "0:v:0", "-map", "0:a:0?",
+            *vargs, *aargs, "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", str(tmp)]
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=NO_WINDOW)
+    if on_process:
+        on_process(proc)
+    _kill_with_parent(proc)
+    assert proc.stdout
+    for raw in proc.stdout:
+        line = raw.decode("ascii", "replace").strip()
+        if on_progress and duration > 0 and line.startswith("out_time_us="):
+            try:
+                on_progress(min(0.99, int(line.split("=", 1)[1]) / 1e6 / duration))
+            except ValueError:
+                pass
+    err = proc.stderr.read().decode("utf-8", "replace") if proc.stderr else ""
+    proc.wait()
+    if proc.returncode != 0 or not tmp.exists():
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError("影片轉檔失敗：" + err[-400:])
+    tmp.replace(out)
 
 
 def finalize(ffmpeg: str, folder: Path, segments: list[dict]) -> Path:

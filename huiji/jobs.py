@@ -59,6 +59,15 @@ class Jobs:
         folder = self.store.folder(mid)
         meeting = self.store.load(mid)
 
+        # 匯入 mkv 等播放器不能播的影片：先轉成 recording.mp4，再刪掉資料夾裡那份複本（使用者的原始檔不動）
+        source = next(folder.glob("source.*"), None)
+        if source and not (folder / "recording.mp4").exists() and screen.needs_conversion(s.ffmpeg_exe, source):
+            self.store.update(mid, status="transcribing", progress="轉換影片…")
+            length = transcribe.probe_duration(s.ffmpeg_exe, source)
+            screen.make_playable(s.ffmpeg_exe, source, folder / "recording.mp4", length,
+                                 lambda p: self.store.update(mid, progress=f"轉換影片 {int(p * 100)}%"), self._set_proc)
+            source.unlink()
+
         # 有錄螢幕：先把影片片段和混音後的聲音合成 recording.mp4
         if meeting.get("video_segments") and not (folder / "recording.mp4").exists():
             self.store.update(mid, status="transcribing", progress="合成影片…")
@@ -70,7 +79,8 @@ class Jobs:
             self.store.update(mid, status="transcribing", progress="準備音檔…")
             duration = meeting.get("duration") or 0
             if not duration:
-                src = folder / "audio.m4a" if (folder / "audio.m4a").exists() else next(folder.glob("source.*"), None)
+                src = next((p for p in [folder / "audio.m4a", *folder.glob("source.*"), folder / "recording.mp4"]
+                            if p.exists()), None)
                 duration = transcribe.probe_duration(s.ffmpeg_exe, src) if src else 0
                 self.store.update(mid, duration=duration)
 

@@ -41,7 +41,9 @@ def ensure_audio(s: Settings, folder: Path) -> Path:
     if audio.exists():
         return audio
     tracks = [folder / n for n in ("mic.wav", "system.wav") if (folder / n).exists() and (folder / n).stat().st_size > 44]
-    imported = next((p for p in folder.glob("source.*")), None)
+    # 匯入的檔案；mkv 之類轉成 mp4 之後，原本的 source 會刪掉，改從 recording.mp4 取聲音
+    imported = next(folder.glob("source.*"), None) or (
+        folder / "recording.mp4" if (folder / "recording.mp4").exists() else None)
     if tracks:
         inputs = sum((["-i", str(t)] for t in tracks), [])
         if len(tracks) == 2:
