@@ -1039,11 +1039,13 @@ async function showSettings(focus) {
         <div class="field"><label class="lbl">模型</label>${modelSelect}
           <input type="text" id="modelCustom" class="${isCustom ? "" : "hidden"}" style="margin-top:8px" value="${esc(isCustom ? s.llm_model : "")}" placeholder="例如 claude-sonnet-5-5"></div>
       </div>
+      <p class="help">使用你電腦上已經登入的 CLI，只會送出逐字稿文字，不會上傳音檔。「預設」就是你平常在 ${s.llm_backend === "codex" ? "Codex" : "Claude Code"} 裡用的模型。<br>${s.llm_backend === "codex"
+        ? "Codex 每次呼叫都會帶上它自己內建的指示，就算逐字稿很短也要用掉約 2.5 萬 tokens，比 Claude Code 耗額度。"
+        : "實測整理一小時的會議約 2.5 萬 tokens；回答待確認題目時只送相關段落，約 8 千 tokens；按「正確」完全不用 AI。"}</p>
       <div class="grid2">
         <div class="field"><label class="lbl">推理強度（effort）</label>${effortSelect}</div>
       </div>
-      <p class="help">推理強度越高想得越仔細，但比較慢、用的 tokens 也比較多。會議紀錄用 medium 通常就夠；常有日期、人名要推敲的話選 high。</p>
-      <p class="help">使用你電腦上已經登入的 CLI，只會送出逐字稿文字，不會上傳音檔。「預設」就是你平常在 ${s.llm_backend === "codex" ? "Codex" : "Claude Code"} 裡用的模型。實測整理一小時的會議約 2.5 萬 tokens；回答待確認題目時只送相關段落，約 8 千 tokens；勾「正確」完全不用 AI。</p>
+      <p class="help">越高想得越仔細，但比較慢、用的 tokens 也比較多。<br>會議紀錄用 medium 通常就夠；常有日期、人名要推敲的話選 high。</p>
       <div class="field"><label class="lbl">詞彙表（一行一個：人名、產品名、專有名詞）</label>
         <textarea data-key="glossary" data-type="list" rows="4" placeholder="例如：&#10;王小明&#10;Breeze ASR&#10;PayLink">${esc((s.glossary || []).join("\n"))}</textarea>
         <p class="help">轉錄時當作提示，AI 整理時也會照這裡的寫法校正。</p></div>

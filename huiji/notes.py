@@ -300,7 +300,7 @@ def generate(backend: str, model: str, prompt: str, on_process=None, effort: str
         if proc.returncode != 0 or not out_file.exists() or not out_file.stat().st_size:
             msg = re.search(r'"message"\s*:\s*"([^"]+)"', stderr)
             if msg and "not supported" in msg.group(1):
-                raise NotesError(f"Codex 不能用這個模型：{msg.group(1)}\n請到設定換一個模型，或改用 Claude Code。")
+                raise NotesError(f"Codex 不能用這個模型：{msg.group(1)}\nCodex 版本太舊時也會這樣，可以先更新（npm install -g @openai/codex），或到設定換一個模型、改用 Claude Code。")
             if msg:
                 raise NotesError(f"Codex 回報錯誤：{msg.group(1)}")
             raise NotesError((stderr or f"codex 沒有回傳結果（結束代碼 {proc.returncode}）")[-600:])
