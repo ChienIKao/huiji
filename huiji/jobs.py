@@ -98,6 +98,7 @@ class Jobs:
             if not meeting.get("title_locked") and result.get("title"):
                 self.store.update(mid, title=result["title"])
         self.store.update(mid, status="done", progress="")
+        self.store.rename_folder(mid)
 
     def _name_self(self, mid: str, folder, meeting: dict, segments: list[dict]) -> None:
         """分軌錄音時，把麥克風那一軌主導的說話者命名為「我」（使用者已命名的不動）"""
@@ -127,6 +128,7 @@ class Jobs:
             if not meeting.get("title_locked") and result.get("title"):
                 self.store.update(mid, title=result["title"])
             self.store.update(mid, status="done", progress="")
+            self.store.rename_folder(mid)
         except Exception as e:  # noqa: BLE001
             self.store.update(mid, status="done", progress="", error=f"修正失敗：{e}")
             raise

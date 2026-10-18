@@ -27,8 +27,11 @@ class Settings:
     llm_model: str = ""
     mic_device: int = -1  # -1 = 系統預設
     loopback_device: int = -1  # -1 = 預設喇叭的 loopback
-    screen_monitor: int = 0  # 依 screen.list_monitors() 的順序，0 = 主螢幕
+    # 錄影來源：{"kind": "monitor", "index": 0}（依 screen.list_monitors() 的順序，0 = 主螢幕）
+    # 或 {"kind": "window", "hwnd": …, "title": …, "exe": …}
+    screen_source: dict = field(default_factory=lambda: {"kind": "monitor", "index": 0})
     screen_fps: int = 15
+    check_updates: bool = True
     glossary: list = field(default_factory=list)
 
     @property
@@ -46,12 +49,18 @@ class Settings:
     def trash_dir(self) -> Path:
         return Path(self.data_dir) / "trash"
 
+    @property
+    def library_file(self) -> Path:
+        return APP_DIR / "library.json"
+
 
 def load() -> Settings:
     s = Settings()
     if SETTINGS_FILE.exists():
         try:
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            if "screen_monitor" in data and "screen_source" not in data:  # 0.3 以前只能選螢幕
+                data["screen_source"] = {"kind": "monitor", "index": data["screen_monitor"]}
             for k, v in data.items():
                 if hasattr(s, k):
                     setattr(s, k, v)

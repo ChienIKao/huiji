@@ -15,7 +15,7 @@ MEDIA_TYPES = {".m4a": "audio/mp4", ".mp4": "video/mp4", ".m4v": "video/mp4", ".
                ".webm": "video/webm"}
 
 
-def start(meetings_dir_getter, dev_api=None, port: int = 0) -> int:
+def start(folder_of, dev_api=None, port: int = 0) -> int:
     """dev_api：開發模式才傳入，讓一般瀏覽器可以用 POST /api/<方法> 呼叫介面 API"""
 
     class Handler(BaseHTTPRequestHandler):
@@ -42,7 +42,10 @@ def start(meetings_dir_getter, dev_api=None, port: int = 0) -> int:
             path = unquote(urlparse(self.path).path)
             m = MEDIA_NAME.match(path)
             if m:
-                file = meetings_dir_getter() / m.group(1) / m.group(2)
+                try:
+                    file = folder_of(m.group(1)) / m.group(2)
+                except KeyError:
+                    return self.send_error(404)
             else:
                 file = (UI_DIR / (path.lstrip("/") or "index.html")).resolve()
                 if UI_DIR.resolve() not in file.parents:

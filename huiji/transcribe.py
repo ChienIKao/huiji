@@ -193,11 +193,43 @@ def srt_time(seconds: float) -> str:
     return f"{ms // 3600000:02d}:{ms % 3600000 // 60000:02d}:{ms % 60000 // 1000:02d},{ms % 1000:03d}"
 
 
-def subtitle_segments(s: Settings, folder: Path, fallback: list[dict]) -> list[dict]:
-    """字幕用的短句：Whisper 原本的分句（逐字稿為了好讀會把同一人的句子合併，太長不適合當字幕）"""
+SENTENCE_END = re.compile(r"(?<=[。！？!?；;])\s*|(?<=[.])\s+")
+CLAUSE_END = re.compile(r"(?<=[，、,：:])\s*")
+
+
+def split_for_subtitles(segments: list[dict], max_chars: int = 36) -> list[dict]:
+    """把合併過的長段落切回字幕長度：先依句號切，太長再依逗號切，時間依字數比例分配"""
+    out = []
+    for seg in segments:
+        pieces = []
+        for sentence in filter(None, SENTENCE_END.split(seg["text"])):
+            if len(sentence) <= max_chars:
+                pieces.append(sentence)
+                continue
+            buf = ""
+            for clause in filter(None, CLAUSE_END.split(sentence)):
+                if buf and len(buf) + len(clause) > max_chars:
+                    pieces.append(buf)
+                    buf = ""
+                buf += clause
+            if buf:
+                pieces.append(buf)
+        total = sum(len(p) for p in pieces) or 1
+        t = seg["start"]
+        span = seg["end"] - seg["start"]
+        for p in pieces:
+            end = t + span * len(p) / total
+            out.append({"start": round(t, 2), "end": round(end, 2), "speaker": seg.get("speaker"), "text": p.strip()})
+            t = end
+    return out
+
+
+def subtitle_segments(s: Settings, folder: Path, fallback: list[dict], edited: bool = False) -> list[dict]:
+    """字幕用的短句：Whisper 原本的分句（逐字稿為了好讀會把同一人的句子合併，太長不適合當字幕）。
+    使用者改過逐字稿時，以改過的內容為準，再切成字幕長度"""
     srt = folder / "whisper" / "work.srt"
-    if not srt.exists():
-        return fallback
+    if edited or not srt.exists():
+        return split_for_subtitles(fallback)
     segments = parse_srt(srt.read_text(encoding="utf-8"))
     for seg, text in zip(segments, to_traditional(s, [x["text"] for x in segments])):
         seg["text"] = fix_punctuation(text)

@@ -1,8 +1,13 @@
 """介面呼叫的 API（pywebview js_api）：每個公開方法都可以從 JS 以 pywebview.api.xxx() 呼叫"""
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
+import threading
+import urllib.request
+import webbrowser
 from dataclasses import asdict
 from pathlib import Path
 
@@ -16,20 +21,28 @@ from .store import Store
 class Api:
     def __init__(self):
         self._settings = config.load()
-        self._store = Store(self._settings.meetings_dir, self._settings.trash_dir)
+        self._store = Store(self._settings.meetings_dir, self._settings.trash_dir, self._settings.library_file)
         self._jobs = Jobs(self._store, lambda: self._settings)
         self._recorder: recorder.Recorder | None = None
         self._screen: screen.ScreenRecorder | None = None
         self._recording_id: str | None = None
+        self._meter: recorder.LevelMonitor | None = None
+        self._meter_lock = threading.Lock()
         self._window = None
-        for mid in self._store.recover():
+        self._mini = None
+        self._url = ""
+        pending = self._store.recover()
+        # 上次沒改成的資料夾名稱（例如當時檔案正在播放）趁啟動時補改
+        self._store.rename_all(skip=set(pending))
+        for mid in pending:
             self._jobs.enqueue(mid)
 
-    def _attach(self, window) -> None:
+    def _attach(self, window, url: str = "") -> None:
         self._window = window
+        self._url = url
 
-    def _meetings_dir(self) -> Path:
-        return self._settings.meetings_dir
+    def _folder(self, mid: str) -> Path:
+        return self._store.folder(mid)
 
     # ---- 狀態（介面每 0.5 秒輪詢） ----
     def state(self) -> dict:
@@ -39,7 +52,8 @@ class Api:
                    "paused": self._recorder.paused, "levels": self._recorder.levels(),
                    "screen": bool(self._screen),
                    "screen_ok": not self._screen or self._recorder.paused or self._screen.running()}
-        return {"recording": rec, "job": self._jobs.current}
+        meter = self._meter.levels() if self._meter else None
+        return {"recording": rec, "job": self._jobs.current, "meter": meter, "mini": self._mini is not None}
 
     # ---- 會議列表 ----
     def list_meetings(self, query: str = "") -> list[dict]:
@@ -74,6 +88,8 @@ class Api:
         if "title" in allowed:
             allowed["title_locked"] = True
         meeting = self._store.update(mid, **allowed)
+        if "title" in allowed and mid != self._recording_id and mid != self._jobs.current:
+            self._store.rename_folder(mid)
         if "speakers" in allowed:
             segments = self._store.read_json(mid, "transcript.json")
             if segments:
@@ -84,21 +100,33 @@ class Api:
     def save_notes(self, mid: str, data: dict) -> None:
         self._store.write_json(mid, "notes.json", data)
 
+    def save_transcript(self, mid: str, segments: list[dict]) -> None:
+        """使用者修改過的逐字稿（改錯字、改某一句的說話者）"""
+        clean = [{"start": float(x["start"]), "end": float(x["end"]), "speaker": x.get("speaker") or None,
+                  "text": str(x["text"]).strip()} for x in segments if str(x.get("text", "")).strip()]
+        self._store.write_json(mid, "transcript.json", clean)
+        meeting = self._store.update(mid, transcript_edited=True)
+        (self._store.folder(mid) / "transcript.srt").write_text(
+            transcribe.to_srt(clean, meeting["speakers"]), encoding="utf-8")
+
     def templates(self) -> list[dict]:
         return [{"id": k, "name": v["name"], "description": v["description"]} for k, v in notes.TEMPLATES.items()]
 
     # ---- 錄音 ----
-    def start_recording(self, mode: str = "both", record_screen: bool = False) -> dict:
+    def start_recording(self, mode: str = "both", record_screen: bool = False, parent: str = "") -> dict:
         if self._recorder:
             raise RuntimeError("已經在錄音了")
+        self.stop_meter()
         s = self._settings
-        meeting = self._store.create(mode=mode)
+        if parent and not Path(parent).is_dir():
+            raise RuntimeError(f"找不到資料夾：{parent}")
+        meeting = self._store.create(mode=mode, parent=Path(parent) if parent else None)
         folder = self._store.folder(meeting["id"])
         rec = recorder.Recorder(folder, mode, s.mic_device, s.loopback_device)
         scr = None
         try:
             if record_screen:
-                scr = screen.ScreenRecorder(s.ffmpeg_exe, folder, s.screen_monitor, s.screen_fps)
+                scr = screen.ScreenRecorder(s.ffmpeg_exe, folder, s.screen_source, s.screen_fps)
             rec.start()
             if scr:
                 scr.start_segment(rec.elapsed())
@@ -147,7 +175,98 @@ class Api:
         self._store.update(mid, status="recorded", duration=duration)
         if process:
             self._jobs.enqueue(mid)
+        self.close_mini()
         return mid
+
+    # ---- 錄音前的音量條 ----
+    def start_meter(self) -> None:
+        with self._meter_lock:
+            if self._meter or self._recorder:
+                return
+            m = recorder.LevelMonitor(self._settings.mic_device, self._settings.loopback_device)
+            try:
+                m.start()
+            except Exception:  # noqa: BLE001  音量條失敗不影響其他功能
+                m.stop()
+                return
+            self._meter = m
+
+    def stop_meter(self) -> None:
+        with self._meter_lock:
+            if self._meter:
+                self._meter.stop()
+                self._meter = None
+
+    # ---- 錄影來源 ----
+    def screen_sources(self) -> dict:
+        return screen.list_sources()
+
+    def source_thumbnail(self, source: dict, max_width: int = 480) -> str | None:
+        try:
+            return screen.thumbnail(source, max_width)
+        except Exception:  # noqa: BLE001  視窗剛好關掉之類的
+            return None
+
+    def set_screen_source(self, source: dict) -> str:
+        keep = {k: source[k] for k in ("kind", "index", "hwnd", "title", "exe") if k in source}
+        self.save_settings({"screen_source": keep})
+        return screen.describe(keep)
+
+    # ---- 錄音中的小視窗 ----
+    def show_mini(self) -> None:
+        if self._mini or not self._url:
+            return
+        work = webview.screens[0] if webview.screens else None
+        x = (work.width - 400) if work else None
+        self._mini = webview.create_window("會記・錄音中", f"{self._url}?mini=1", js_api=self, width=380, height=60,
+                                           x=x, y=40 if work else None, resizable=False, frameless=True,
+                                           easy_drag=True, on_top=True, background_color="#232323")
+        self._mini.events.closed += lambda: setattr(self, "_mini", None)
+        if self._window:
+            self._window.minimize()
+
+    def close_mini(self) -> None:
+        mini, self._mini = self._mini, None
+        if mini:
+            mini.destroy()
+            if self._window:
+                self._window.restore()
+                self._window.show()
+
+    # ---- 存放位置 ----
+    def default_record_dir(self) -> str:
+        return str(self._settings.meetings_dir)
+
+    def pick_folder(self, start: str = "") -> str | None:
+        r = self._window.create_file_dialog(webview.FileDialog.FOLDER,
+                                            directory=start or str(self._settings.meetings_dir))
+        if not r:
+            return None
+        return r if isinstance(r, str) else r[0]
+
+    # ---- 新版本 ----
+    def check_update(self) -> dict | None:
+        if not self._settings.check_updates:
+            return None
+        try:
+            req = urllib.request.Request("https://api.github.com/repos/ChienIKao/huiji/releases/latest",
+                                         headers={"Accept": "application/vnd.github+json", "User-Agent": "Huiji"})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                data = json.load(r)
+        except (OSError, ValueError):
+            return None
+        latest = data.get("tag_name", "").lstrip("v")
+
+        def ver(v: str) -> tuple:
+            return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
+
+        if latest and ver(latest) > ver(__version__):
+            return {"version": latest, "url": data.get("html_url", "")}
+        return None
+
+    def open_url(self, url: str) -> None:
+        if url.startswith("https://github.com/ChienIKao/huiji"):
+            webbrowser.open(url)
 
     # ---- 匯入 ----
     def import_files(self) -> list[str]:
@@ -191,7 +310,8 @@ class Api:
                 shutil.copy2(src, target)
             return target
         if kind in ("srt", "srt_plain"):
-            subs = transcribe.subtitle_segments(self._settings, self._store.folder(mid), segs)
+            subs = transcribe.subtitle_segments(self._settings, self._store.folder(mid), segs,
+                                                edited=bool(m.get("transcript_edited")))
             content = transcribe.to_srt(subs, m["speakers"], with_speaker=kind == "srt")
             name = f"{safe}.srt"
         elif kind == "transcript":
@@ -217,6 +337,9 @@ class Api:
         self._settings.meetings_dir.mkdir(parents=True, exist_ok=True)
         os.startfile(self._settings.data_dir)  # noqa: S606
 
+    def meeting_folder(self, mid: str) -> str:
+        return str(self._store.folder(mid))
+
     def open_folder(self, mid: str) -> None:
         os.startfile(self._store.folder(mid))  # noqa: S606
 
@@ -239,7 +362,7 @@ class Api:
     # ---- 設定 ----
     def get_settings(self) -> dict:
         return {"settings": asdict(self._settings), "devices": recorder.list_devices(), "version": __version__,
-                "monitors": screen.list_monitors(),
+                "monitors": screen.list_monitors(), "screen_source_name": screen.describe(self._settings.screen_source),
                 "backends": notes.available_backends()}
 
     def save_settings(self, data: dict) -> dict:
@@ -249,7 +372,7 @@ class Api:
                 setattr(self._settings, k, v)
         config.save(self._settings)
         if self._settings.data_dir != old_dir:
-            self._store = Store(self._settings.meetings_dir, self._settings.trash_dir)
+            self._store = Store(self._settings.meetings_dir, self._settings.trash_dir, self._settings.library_file)
             self._jobs.store = self._store
         return asdict(self._settings)
 

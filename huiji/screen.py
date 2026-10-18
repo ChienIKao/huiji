@@ -1,4 +1,4 @@
-"""螢幕錄影：ffmpeg gdigrab 擷取指定螢幕，硬體編碼（NVENC／Quick Sync）優先。
+"""螢幕錄影：整個螢幕用 ffmpeg gdigrab 擷取，單一視窗用 wincap（PrintWindow）擷取；硬體編碼（NVENC／Quick Sync）優先。
 
 暫停時結束目前的片段、繼續時開新的片段（video_000.mkv、video_001.mkv…），
 錄完後依各片段對應的錄音長度串接，再跟混音後的 audio.m4a 合成 recording.mp4。
@@ -6,12 +6,17 @@
 """
 from __future__ import annotations
 
+import base64
 import ctypes
 import ctypes.wintypes as wt
+import io
 import subprocess
 import threading
 from pathlib import Path
 
+from PIL import Image, ImageGrab
+
+from . import wincap
 from .transcribe import NO_WINDOW, probe_duration
 
 _encoder_cache: dict[str, list[str]] = {}
@@ -101,6 +106,38 @@ def list_monitors() -> list[dict]:
     return monitors
 
 
+def list_sources() -> dict:
+    return {"monitors": list_monitors(), "windows": wincap.list_windows()}
+
+
+def describe(source: dict) -> str:
+    if source.get("kind") == "window":
+        return f"視窗：{source.get('title') or source.get('exe')}"
+    monitors = list_monitors()
+    i = source.get("index", 0)
+    return monitors[i]["name"] if 0 <= i < len(monitors) else monitors[0]["name"]
+
+
+def thumbnail(source: dict, max_width: int = 480) -> str | None:
+    """來源目前的畫面（JPEG data URL），給選擇來源時預覽用"""
+    if source.get("kind") == "window":
+        hwnd = wincap.find_window(source)
+        img = wincap.snapshot(hwnd) if hwnd else None
+    else:
+        monitors = list_monitors()
+        i = source.get("index", 0)
+        m = monitors[i] if 0 <= i < len(monitors) else monitors[0]
+        img = ImageGrab.grab(bbox=(m["x"], m["y"], m["x"] + m["width"], m["y"] + m["height"]), all_screens=True)
+    if img is None:
+        return None
+    img = img.convert("RGB")
+    if img.width > max_width:
+        img = img.resize((max_width, round(img.height * max_width / img.width)), Image.BILINEAR)
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=70)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
 def pick_encoder(ffmpeg: str) -> list[str]:
     """試著用小畫面編碼一次，挑第一個能用的編碼器"""
     with _encoder_lock:
@@ -118,19 +155,37 @@ def pick_encoder(ffmpeg: str) -> list[str]:
 
 # ---- 錄影 ----
 class ScreenRecorder:
-    def __init__(self, ffmpeg: str, folder: Path, monitor: int = 0, fps: int = 15):
+    """source：{"kind": "monitor", "index": 0} 或 {"kind": "window", "hwnd": …, "title": …, "exe": …}"""
+
+    def __init__(self, ffmpeg: str, folder: Path, source: dict, fps: int = 15):
         self.ffmpeg = ffmpeg
         self.folder = folder
-        monitors = list_monitors()
-        self.monitor = monitors[monitor] if 0 <= monitor < len(monitors) else monitors[0]
         self.fps = fps
         self.encoder = pick_encoder(ffmpeg)
+        self.hwnd = None
+        self.monitor = None
+        if source.get("kind") == "window":
+            self.hwnd = wincap.find_window(source)
+            if not self.hwnd:
+                raise RuntimeError(f"找不到要錄的視窗「{source.get('title') or source.get('exe')}」，請重新選擇錄影來源")
+        else:
+            monitors = list_monitors()
+            i = source.get("index", 0)
+            self.monitor = monitors[i] if 0 <= i < len(monitors) else monitors[0]
         self.proc: subprocess.Popen | None = None
+        self.window: wincap.WindowRecorder | None = None
         self.segments: list[dict] = []  # [{"file": "video_000.mkv", "duration": 秒}]
         self._segment_start = 0.0
 
     def start_segment(self, elapsed: float) -> None:
         name = f"video_{len(self.segments):03d}.mkv"
+        self.segments.append({"file": name, "duration": None})
+        self._segment_start = elapsed
+        if self.hwnd:
+            self.window = wincap.WindowRecorder(self.ffmpeg, self.hwnd, self.fps, self.encoder,
+                                                self.folder / name, self.folder / "video.log")
+            _kill_with_parent(self.window.proc)
+            return
         m = self.monitor
         args = [self.ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
                 "-f", "gdigrab", "-framerate", str(self.fps), "-draw_mouse", "1",
@@ -142,10 +197,13 @@ class ScreenRecorder:
             self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log,
                                          creationflags=NO_WINDOW)
         _kill_with_parent(self.proc)
-        self.segments.append({"file": name, "duration": None})
-        self._segment_start = elapsed
 
     def stop_segment(self, elapsed: float) -> None:
+        if self.window:
+            self.window.stop()
+            self.window = None
+            self.segments[-1]["duration"] = round(elapsed - self._segment_start, 3)
+            return
         if not self.proc:
             return
         proc, self.proc = self.proc, None
@@ -157,6 +215,8 @@ class ScreenRecorder:
         self.segments[-1]["duration"] = round(elapsed - self._segment_start, 3)
 
     def running(self) -> bool:
+        if self.window:
+            return self.window.running()
         return self.proc is not None and self.proc.poll() is None
 
 

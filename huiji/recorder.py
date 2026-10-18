@@ -14,6 +14,19 @@ from pathlib import Path
 import numpy as np
 import pyaudiowpatch as pa
 
+# PortAudio 的初始化／結束不能同時在兩個執行緒進行（會直接當掉），一律經過這兩個函式
+_pa_lock = threading.Lock()
+
+
+def _open_pa() -> pa.PyAudio:
+    with _pa_lock:
+        return pa.PyAudio()
+
+
+def _close_pa(p: pa.PyAudio) -> None:
+    with _pa_lock:
+        p.terminate()
+
 CHUNK_SECONDS = 0.05
 
 
@@ -52,7 +65,7 @@ def _level(data: bytes) -> float:
 
 
 def list_devices() -> dict:
-    p = pa.PyAudio()
+    p = _open_pa()
     try:
         wasapi = p.get_host_api_info_by_type(pa.paWASAPI)
         mics, loopbacks = [], []
@@ -66,7 +79,7 @@ def list_devices() -> dict:
                 mics.append({"index": i, "name": d["name"]})
         return {"mics": mics, "loopbacks": loopbacks}
     finally:
-        p.terminate()
+        _close_pa(p)
 
 
 class Recorder:
@@ -99,7 +112,7 @@ class Recorder:
 
     # ---- 控制 ----
     def start(self) -> None:
-        self.p = pa.PyAudio()
+        self.p = _open_pa()
         wasapi = self.p.get_host_api_info_by_type(pa.paWASAPI)
         if self.mode in ("both", "mic"):
             info = self.p.get_device_info_by_index(
@@ -153,7 +166,7 @@ class Recorder:
                     track.pad_to(int(duration * track.rate))
                     track.close()
         if self.p:
-            self.p.terminate()
+            _close_pa(self.p)
         return duration
 
     def levels(self) -> dict:
@@ -195,3 +208,63 @@ def repair_wav(path: Path) -> None:
         f.write(struct.pack("<I", size - 8))
         f.seek(40)
         f.write(struct.pack("<I", size - 44))
+
+
+class LevelMonitor:
+    """還沒開始錄音時的音量條：開啟麥克風與系統音，只算音量、不寫檔"""
+
+    def __init__(self, mic_device: int = -1, loopback_device: int = -1):
+        self.mic_device = mic_device
+        self.loopback_device = loopback_device
+        self.p = None
+        self.streams = []
+        self._levels = {"mic": 0.0, "system": 0.0}
+        self._seen = {"mic": 0.0, "system": 0.0}
+
+    def start(self) -> None:
+        self.p = _open_pa()
+        wasapi = self.p.get_host_api_info_by_type(pa.paWASAPI)
+        try:
+            mic = self.p.get_device_info_by_index(
+                self.mic_device if self.mic_device >= 0 else wasapi["defaultInputDevice"])
+            self._open(mic, "mic")
+        except (OSError, IOError):
+            self._levels["mic"] = None
+        try:
+            rec = Recorder.__new__(Recorder)
+            rec.p, rec.loopback_device = self.p, self.loopback_device
+            self._open(rec._loopback_info(wasapi), "system")
+        except (OSError, IOError, RuntimeError):
+            self._levels["system"] = None
+        for s in self.streams:
+            s.start_stream()
+
+    def _open(self, info: dict, key: str) -> None:
+        rate = int(info["defaultSampleRate"])
+        channels = max(1, min(2, int(info["maxInputChannels"])))
+
+        def callback(data, frames, time_info, status):
+            self._levels[key] = _level(data)
+            self._seen[key] = time.monotonic()
+            return (None, pa.paContinue)
+
+        self.streams.append(self.p.open(format=pa.paInt16, channels=channels, rate=rate, input=True,
+                                        input_device_index=info["index"], frames_per_buffer=int(rate * CHUNK_SECONDS),
+                                        stream_callback=callback))
+
+    def levels(self) -> dict:
+        now = time.monotonic()
+        # 系統沒有聲音在播放時 loopback 不會送資料進來：一段時間沒收到就當作 0
+        return {k: (None if v is None else (v if now - self._seen[k] < 0.3 else 0.0)) for k, v in self._levels.items()}
+
+    def stop(self) -> None:
+        for s in self.streams:
+            try:
+                s.stop_stream()
+                s.close()
+            except OSError:
+                pass
+        self.streams = []
+        if self.p:
+            _close_pa(self.p)
+            self.p = None

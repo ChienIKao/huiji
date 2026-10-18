@@ -1,17 +1,22 @@
 """會議資料：每場會議一個資料夾，裡面放 meeting.json、音檔、逐字稿、會議紀錄。
 
-meetings/<id>/
-  meeting.json      標題、日期、狀態、說話者名稱、筆記、重點標記
+<資料夾>/<日期 標題>/
+  meeting.json      id、標題、日期、狀態、說話者名稱、筆記、重點標記
   mic.wav           麥克風（錄音時才有）
   system.wav        系統音（錄音時才有）
   audio.m4a         混音後的音檔，播放用
+  recording.mp4     螢幕錄影＋聲音（有錄螢幕時）
   transcript.json   逐字稿 [{start, end, speaker, text}]
   transcript.srt
   notes.json        AI 整理的會議紀錄
+
+會議預設放在設定的資料夾裡；錄音前也可以選別的資料夾，那些位置記在 library.json。
+資料夾名稱跟著標題改（AI 取好標題、或使用者改標題時），會議的 id 不變。
 """
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import threading
 from datetime import datetime
@@ -20,25 +25,89 @@ from pathlib import Path
 from . import recorder
 
 _lock = threading.Lock()
+INVALID = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def folder_name(date: str, title: str) -> str:
+    # 冒號在資料夾名稱裡不能用，換成全形的（「10:30 會議」→「10：30 會議」），其他不能用的字元換成空白
+    safe = INVALID.sub(" ", title.replace(":", "：")).strip().rstrip(". ")[:60].strip()
+    return f"{date} {safe}" if safe else date
+
+
+def _unique(path: Path) -> Path:
+    if not path.exists():
+        return path
+    i = 2
+    while (candidate := path.with_name(f"{path.name} ({i})")).exists():
+        i += 1
+    return candidate
 
 
 class Store:
-    def __init__(self, meetings_dir: Path, trash_dir: Path):
+    def __init__(self, meetings_dir: Path, trash_dir: Path, library_file: Path):
         self.root = meetings_dir
         self.trash = trash_dir
+        self.library_file = library_file
         self.root.mkdir(parents=True, exist_ok=True)
+        self._paths: dict[str, Path] = {}
+        self._scan()
+
+    # ---- 會議資料夾的位置 ----
+    def _external(self) -> list[str]:
+        """不在預設資料夾裡的會議（錄音前選了別的位置）"""
+        try:
+            return json.loads(self.library_file.read_text(encoding="utf-8")).get("folders", [])
+        except (OSError, ValueError):
+            return []
+
+    def _save_external(self, folders: list[str]) -> None:
+        self.library_file.parent.mkdir(parents=True, exist_ok=True)
+        self.library_file.write_text(json.dumps({"folders": sorted(set(folders))}, ensure_ascii=False, indent=2),
+                                     encoding="utf-8")
+
+    def _set_external(self, old: Path | None, new: Path | None) -> None:
+        folders = [f for f in self._external() if old is None or Path(f) != old]
+        if new is not None and new.parent != self.root:
+            folders.append(str(new))
+        self._save_external(folders)
+
+    def _scan(self) -> None:
+        paths: dict[str, Path] = {}
+        candidates = [d for d in self.root.iterdir() if d.is_dir()] + [Path(f) for f in self._external()]
+        for d in candidates:
+            f = d / "meeting.json"
+            try:
+                paths[json.loads(f.read_text(encoding="utf-8"))["id"]] = d
+            except (OSError, ValueError, KeyError):
+                continue
+        self._paths = paths
 
     def folder(self, mid: str) -> Path:
-        return self.root / mid
+        path = self._paths.get(mid)
+        if path is None or not path.exists():
+            self._scan()
+            path = self._paths.get(mid)
+        if path is None:
+            raise KeyError(f"找不到會議 {mid}")
+        return path
 
     # ---- 建立 ----
-    def create(self, title: str = "", source: str = "record", mode: str = "both") -> dict:
+    def create(self, title: str = "", source: str = "record", mode: str = "both", parent: Path | None = None) -> dict:
         now = datetime.now()
         mid = now.strftime("%Y%m%d-%H%M%S")
-        self.folder(mid).mkdir(parents=True, exist_ok=False)
+        while mid in self._paths:  # 同一秒建立兩場（例如一次匯入多個檔案）
+            mid += "x"
+        display = title or now.strftime("%H:%M 會議")
+        parent = Path(parent) if parent else self.root
+        parent.mkdir(parents=True, exist_ok=True)
+        path = _unique(parent / folder_name(now.strftime("%Y-%m-%d"), display))
+        path.mkdir()
+        self._paths[mid] = path
+        if parent != self.root:
+            self._set_external(None, path)
         meeting = {
             "id": mid,
-            "title": title or now.strftime("%m/%d %H:%M 會議"),
+            "title": display,
             "title_locked": bool(title),
             "date": now.strftime("%Y-%m-%d"),
             "created_at": now.isoformat(timespec="seconds"),
@@ -55,6 +124,31 @@ class Store:
         }
         self.save(meeting)
         return meeting
+
+    def rename_folder(self, mid: str) -> bool:
+        """資料夾名稱跟著標題改；檔案正在使用（例如正在播放）時改不了，下次啟動再試"""
+        try:
+            m = self.load(mid)
+            cur = self.folder(mid)
+        except (KeyError, OSError, ValueError):
+            return False
+        want = folder_name(m["date"], m["title"])
+        if cur.name == want or re.fullmatch(re.escape(want) + r" \(\d+\)", cur.name):
+            return True
+        new = _unique(cur.parent / want)
+        try:
+            cur.rename(new)
+        except OSError:
+            return False
+        self._paths[mid] = new
+        if cur.parent != self.root:
+            self._set_external(cur, new)
+        return True
+
+    def rename_all(self, skip: set[str] = frozenset()) -> None:
+        for mid in list(self._paths):
+            if mid not in skip:
+                self.rename_folder(mid)
 
     # ---- 讀寫 ----
     def load(self, mid: str) -> dict:
@@ -91,13 +185,13 @@ class Store:
 
     # ---- 列表與搜尋 ----
     def list(self) -> list[dict]:
+        self._scan()
         meetings = []
-        for d in self.root.iterdir():
-            if (d / "meeting.json").exists():
-                try:
-                    meetings.append(self.load(d.name))
-                except (OSError, ValueError):
-                    continue
+        for mid in self._paths:
+            try:
+                meetings.append(self.load(mid))
+            except (OSError, ValueError, KeyError):
+                continue
         meetings.sort(key=lambda m: m["created_at"], reverse=True)
         return meetings
 
@@ -116,22 +210,42 @@ class Store:
         return hits
 
     # ---- 垃圾桶 ----
+    def _trash_folders(self) -> dict[str, Path]:
+        out = {}
+        if self.trash.exists():
+            for d in self.trash.iterdir():
+                try:
+                    out[json.loads((d / "meeting.json").read_text(encoding="utf-8"))["id"]] = d
+                except (OSError, ValueError, KeyError):
+                    continue
+        return out
+
     def delete(self, mid: str) -> None:
+        cur = self.folder(mid)
+        self.update(mid, trash_origin=str(cur))
         self.trash.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(self.folder(mid)), str(self.trash / mid))
+        shutil.move(str(cur), str(_unique(self.trash / cur.name)))
+        self._paths.pop(mid, None)
+        if cur.parent != self.root:
+            self._set_external(cur, None)
 
     def trash_list(self) -> list[dict]:
-        if not self.trash.exists():
-            return []
         out = []
-        for d in self.trash.iterdir():
-            f = d / "meeting.json"
-            if f.exists():
-                out.append(json.loads(f.read_text(encoding="utf-8")))
+        for d in self._trash_folders().values():
+            out.append(json.loads((d / "meeting.json").read_text(encoding="utf-8")))
         return sorted(out, key=lambda m: m["created_at"], reverse=True)
 
     def restore(self, mid: str) -> None:
-        shutil.move(str(self.trash / mid), str(self.folder(mid)))
+        src = self._trash_folders()[mid]
+        meeting = json.loads((src / "meeting.json").read_text(encoding="utf-8"))
+        origin = Path(meeting.get("trash_origin") or self.root / src.name)
+        if not origin.parent.exists():
+            origin = self.root / origin.name
+        target = _unique(origin)
+        shutil.move(str(src), str(target))
+        self._paths[mid] = target
+        if target.parent != self.root:
+            self._set_external(None, target)
 
     def empty_trash(self) -> None:
         if self.trash.exists():
