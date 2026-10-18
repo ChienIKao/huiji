@@ -363,6 +363,7 @@ class Api:
     def get_settings(self) -> dict:
         return {"settings": asdict(self._settings), "devices": recorder.list_devices(), "version": __version__,
                 "default_models": notes.default_models(), "claude_models": notes.CLAUDE_MODELS,
+                "default_efforts": notes.default_efforts(), "efforts": notes.EFFORTS,
                 "monitors": screen.list_monitors(), "screen_source_name": screen.describe(self._settings.screen_source),
                 "backends": notes.available_backends()}
 

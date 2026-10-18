@@ -201,6 +201,27 @@ CLAUDE_MODELS = [("", "預設"), ("opus", "Opus（最準確）"), ("sonnet", "So
                  ("haiku", "Haiku（最快、最省）")]
 
 
+EFFORTS = [("", "預設"), ("low", "low（最快、最省）"), ("medium", "medium（一般整理建議）"),
+           ("high", "high（較仔細，日期、人名比較不會錯）"), ("xhigh", "xhigh（最仔細、最慢）")]
+
+
+def default_efforts() -> dict:
+    """claude／codex 沒指定推理強度時用的是哪個：讀它們自己的設定檔"""
+    out = {"claude": "", "codex": ""}
+    home = Path.home()
+    try:
+        out["claude"] = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8")).get("effortLevel", "")
+    except (OSError, ValueError):
+        pass
+    try:
+        m = re.search(r'^\s*model_reasoning_effort\s*=\s*"([^"]+)"',
+                      (home / ".codex" / "config.toml").read_text(encoding="utf-8"), re.M)
+        out["codex"] = m.group(1) if m else ""
+    except OSError:
+        pass
+    return out
+
+
 def default_models() -> dict:
     """claude／codex 沒指定模型時用的是哪個：讀它們自己的設定檔"""
     out = {"claude": "", "codex": ""}
@@ -217,8 +238,8 @@ def default_models() -> dict:
     return out
 
 
-def generate(backend: str, model: str, prompt: str, on_process=None) -> tuple[dict, dict]:
-    """回傳（會議紀錄, 用量）；用量是 {model, input_tokens, output_tokens, cost_usd}，拿不到的欄位是 None"""
+def generate(backend: str, model: str, prompt: str, on_process=None, effort: str = "") -> tuple[dict, dict]:
+    """回傳（會議紀錄, 用量）；用量是 {model, effort, input_tokens, output_tokens, cost_usd}，拿不到的欄位是 None"""
     schema = json.dumps(SCHEMA, ensure_ascii=False)
     # 在空的暫存資料夾執行：不會讀到任何專案的 CLAUDE.md / AGENTS.md
     with tempfile.TemporaryDirectory() as d:
@@ -227,6 +248,8 @@ def generate(backend: str, model: str, prompt: str, on_process=None) -> tuple[di
                     "--strict-mcp-config", "--system-prompt", SYSTEM_PROMPT, "--json-schema", schema]
             if model:
                 args += ["--model", model]
+            if effort:
+                args += ["--effort", effort]
             stdin = prompt
         elif backend == "codex":
             schema_file, out_file = Path(d) / "schema.json", Path(d) / "out.json"
@@ -235,6 +258,8 @@ def generate(backend: str, model: str, prompt: str, on_process=None) -> tuple[di
                     "--color", "never", "--output-schema", str(schema_file), "-o", str(out_file)]
             if model:
                 args += ["-m", model]
+            if effort:
+                args += ["-c", f'model_reasoning_effort="{effort}"']
             args.append("-")
             stdin = SYSTEM_PROMPT + "\n\n" + prompt
         else:
@@ -264,6 +289,7 @@ def generate(backend: str, model: str, prompt: str, on_process=None) -> tuple[di
             used = next(iter(models.values()), {})
             usage = {
                 "model": used.get("canonicalModel") or next(iter(models), model or None),
+                "effort": effort or default_efforts()["claude"] or None,
                 "input_tokens": (u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
                 + (u.get("cache_read_input_tokens") or 0),
                 "output_tokens": u.get("output_tokens"),
@@ -272,9 +298,15 @@ def generate(backend: str, model: str, prompt: str, on_process=None) -> tuple[di
             return _clean_times(obj["structured_output"]), usage
 
         if proc.returncode != 0 or not out_file.exists() or not out_file.stat().st_size:
+            msg = re.search(r'"message"\s*:\s*"([^"]+)"', stderr)
+            if msg and "not supported" in msg.group(1):
+                raise NotesError(f"Codex 不能用這個模型：{msg.group(1)}\n請到設定換一個模型，或改用 Claude Code。")
+            if msg:
+                raise NotesError(f"Codex 回報錯誤：{msg.group(1)}")
             raise NotesError((stderr or f"codex 沒有回傳結果（結束代碼 {proc.returncode}）")[-600:])
         m = re.search(r"tokens used[:\s]*([\d,]+)", stderr + stdout, re.I)
         usage = {"model": model or default_models()["codex"] or None,
+                 "effort": effort or default_efforts()["codex"] or None,
                  "input_tokens": None, "output_tokens": None, "cost_usd": None,
                  "total_tokens": int(m.group(1).replace(",", "")) if m else None}
         return _clean_times(json.loads(out_file.read_text(encoding="utf-8"))), usage

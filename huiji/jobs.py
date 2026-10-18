@@ -94,7 +94,7 @@ class Jobs:
             self.store.update(mid, status="summarizing", progress=f"AI 整理中（{s.llm_backend}）…")
             meeting = self.store.load(mid)
             prompt = notes.build_prompt(meeting, segments, s.glossary)
-            result, usage = notes.generate(s.llm_backend, s.llm_model, prompt, self._set_proc)
+            result, usage = notes.generate(s.llm_backend, s.llm_model, prompt, self._set_proc, s.llm_effort)
             self.store.write_json(mid, "notes.json", result)
             self._log_usage(mid, "整理會議紀錄", usage)
             if not meeting.get("title_locked") and result.get("title"):
@@ -139,7 +139,7 @@ class Jobs:
             self.store.update(mid, status="summarizing", progress="依回答修正中…")
             try:
                 result, usage = notes.generate(s.llm_backend if s.llm_backend != "none" else "claude", s.llm_model,
-                                               prompt)
+                                               prompt, effort=s.llm_effort)
                 self.store.write_json(mid, "notes.json", result)
                 self._log_usage(mid, "依回答修正", usage)
                 if not meeting.get("title_locked") and result.get("title"):

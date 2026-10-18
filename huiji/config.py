@@ -25,6 +25,7 @@ class Settings:
     opencc_config: str = r"D:\App\whisper\OpenCC\share\opencc\s2twp.json"
     llm_backend: str = "claude"  # claude | codex | none
     llm_model: str = ""
+    llm_effort: str = ""  # 推理強度：空字串 = 沿用 claude／codex 自己的設定
     mic_device: int = -1  # -1 = 系統預設
     loopback_device: int = -1  # -1 = 預設喇叭的 loopback
     # 錄影來源：{"kind": "monitor", "index": 0}（依 screen.list_monitors() 的順序，0 = 主螢幕）

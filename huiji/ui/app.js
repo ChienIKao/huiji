@@ -315,7 +315,7 @@ function usageLine(m) {
   const log = m.ai_usage || [];
   if (!log.length) return `<span class="spacer"></span>`;
   const n = (x) => (x == null ? "?" : Number(x).toLocaleString());
-  const one = (u) => `${u.kind}：${u.model || "未知模型"}・` + (u.input_tokens != null
+  const one = (u) => `${u.kind}：${u.model || "未知模型"}${u.effort ? `（${u.effort}）` : ""}・` + (u.input_tokens != null
     ? `輸入 ${n(u.input_tokens)}／輸出 ${n(u.output_tokens)} tokens`
     : u.total_tokens != null ? `${n(u.total_tokens)} tokens` : "用量不明");
   const last = log[log.length - 1];
@@ -1006,7 +1006,11 @@ $("#settingsBtn").addEventListener("click", () => showSettings());
 async function showSettings(focus) {
   showView("settings");
   const { settings: s, devices, backends, version, screen_source_name: sourceName,
-          default_models: defaults, claude_models: claudeModels } = await api.get_settings();
+          default_models: defaults, claude_models: claudeModels,
+          default_efforts: defaultEfforts, efforts } = await api.get_settings();
+  const defaultEffort = defaultEfforts[s.llm_backend] || "";
+  const effortSelect = `<select id="effortSel" ${s.llm_backend === "none" ? "disabled" : ""}>${efforts.map(([v, label]) =>
+    `<option value="${v}" ${v === (s.llm_effort || "") ? "selected" : ""}>${esc(v ? label : `預設${defaultEffort ? `（目前是 ${defaultEffort}）` : ""}`)}</option>`).join("")}</select>`;
   const modelOptions = s.llm_backend === "claude" ? claudeModels : [["", "預設"]];
   const defaultName = defaults[s.llm_backend] || "";
   const isCustom = s.llm_model && !modelOptions.some(([v]) => v === s.llm_model);
@@ -1035,6 +1039,10 @@ async function showSettings(focus) {
         <div class="field"><label class="lbl">模型</label>${modelSelect}
           <input type="text" id="modelCustom" class="${isCustom ? "" : "hidden"}" style="margin-top:8px" value="${esc(isCustom ? s.llm_model : "")}" placeholder="例如 claude-sonnet-5-5"></div>
       </div>
+      <div class="grid2">
+        <div class="field"><label class="lbl">推理強度（effort）</label>${effortSelect}</div>
+      </div>
+      <p class="help">推理強度越高想得越仔細，但比較慢、用的 tokens 也比較多。會議紀錄用 medium 通常就夠；常有日期、人名要推敲的話選 high。</p>
       <p class="help">使用你電腦上已經登入的 CLI，只會送出逐字稿文字，不會上傳音檔。「預設」就是你平常在 ${s.llm_backend === "codex" ? "Codex" : "Claude Code"} 裡用的模型。實測整理一小時的會議約 2.5 萬 tokens；回答待確認題目時只送相關段落，約 8 千 tokens；勾「正確」完全不用 AI。</p>
       <div class="field"><label class="lbl">詞彙表（一行一個：人名、產品名、專有名詞）</label>
         <textarea data-key="glossary" data-type="list" rows="4" placeholder="例如：&#10;王小明&#10;Breeze ASR&#10;PayLink">${esc((s.glossary || []).join("\n"))}</textarea>
@@ -1091,6 +1099,7 @@ async function showSettings(focus) {
     if (custom) $("#modelCustom").focus(); else saveModel(e.target.value);
   };
   $("#modelCustom").onchange = (e) => saveModel(e.target.value.trim());
+  $("#effortSel").onchange = async (e) => { await call("save_settings", { llm_effort: e.target.value }); toast("已儲存", 1200); };
   $("#setSource").onclick = async () => {
     S.screenSource = s.screen_source;
     const name = await pickSource();
@@ -1108,7 +1117,7 @@ $("#settingsBody").addEventListener("change", async (e) => {
   else if (type === "str") value = value.trim();
   await call("save_settings", { [el.dataset.key]: value });
   toast("已儲存", 1200);
-  if (el.dataset.key === "llm_backend") await call("save_settings", { llm_model: "" });  // 換 AI 時模型改回預設
+  if (el.dataset.key === "llm_backend") await call("save_settings", { llm_model: "", llm_effort: "" });  // 換 AI 時改回預設
   if (["whisper_exe", "opencc_exe", "llm_backend"].includes(el.dataset.key)) {
     const y = $("#settingsView").scrollTop;
     await showSettings();
