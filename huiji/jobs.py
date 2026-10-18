@@ -4,6 +4,7 @@ from __future__ import annotations
 import queue
 import threading
 import traceback
+from datetime import datetime
 
 from . import notes, screen, selfvoice, transcribe
 from .config import Settings
@@ -93,8 +94,9 @@ class Jobs:
             self.store.update(mid, status="summarizing", progress=f"AI 整理中（{s.llm_backend}）…")
             meeting = self.store.load(mid)
             prompt = notes.build_prompt(meeting, segments, s.glossary)
-            result = notes.generate(s.llm_backend, s.llm_model, prompt, self._set_proc)
+            result, usage = notes.generate(s.llm_backend, s.llm_model, prompt, self._set_proc)
             self.store.write_json(mid, "notes.json", result)
+            self._log_usage(mid, "整理會議紀錄", usage)
             if not meeting.get("title_locked") and result.get("title"):
                 self.store.update(mid, title=result["title"])
         self.store.update(mid, status="done", progress="")
@@ -114,21 +116,41 @@ class Jobs:
             speakers[me] = "我"
             self.store.update(mid, speakers=speakers)
 
-    def revise(self,mid: str, answers: list[dict]) -> None:
-        """依使用者對待確認題目的回答修正紀錄（在呼叫端的執行緒執行）"""
-        s: Settings = self.settings()
+    def _log_usage(self, mid: str, kind: str, usage: dict) -> None:
+        """記下每次呼叫 AI 的模型與 token 用量（顯示在會議紀錄下方）"""
         meeting = self.store.load(mid)
-        segments = self.store.read_json(mid, "transcript.json") or []
-        current = self.store.read_json(mid, "notes.json") or {}
-        prompt = notes.build_revise_prompt(meeting, segments, s.glossary, current, answers)
-        self.store.update(mid, status="summarizing", progress="依回答修正中…")
-        try:
-            result = notes.generate(s.llm_backend if s.llm_backend != "none" else "claude", s.llm_model, prompt)
-            self.store.write_json(mid, "notes.json", result)
-            if not meeting.get("title_locked") and result.get("title"):
-                self.store.update(mid, title=result["title"])
+        log = (meeting.get("ai_usage") or [])[-19:]
+        log.append({"kind": kind, "at": datetime.now().isoformat(timespec="seconds"), **usage})
+        self.store.update(mid, ai_usage=log)
+
+    def revise(self, mid: str, answers: list[dict], confirmed: list[str] | None = None) -> None:
+        """依使用者對待確認題目的回答修正紀錄（在呼叫端的執行緒執行）。
+
+        answers：有文字回答的題目，要請 AI 修正；confirmed：使用者勾「正確」的題目，
+        內容本來就對，不用動紀錄，直接從待確認移除，不呼叫 AI。
+        """
+        s: Settings = self.settings()
+        confirmed = set(confirmed or [])
+        if answers:
+            meeting = self.store.load(mid)
+            segments = self.store.read_json(mid, "transcript.json") or []
+            current = self.store.read_json(mid, "notes.json") or {}
+            prompt = notes.build_revise_prompt(meeting, segments, s.glossary, current, answers)
+            self.store.update(mid, status="summarizing", progress="依回答修正中…")
+            try:
+                result, usage = notes.generate(s.llm_backend if s.llm_backend != "none" else "claude", s.llm_model,
+                                               prompt)
+                self.store.write_json(mid, "notes.json", result)
+                self._log_usage(mid, "依回答修正", usage)
+                if not meeting.get("title_locked") and result.get("title"):
+                    self.store.update(mid, title=result["title"])
+            except Exception as e:  # noqa: BLE001
+                self.store.update(mid, status="done", progress="", error=f"修正失敗：{e}")
+                raise
+        if confirmed:
+            current = self.store.read_json(mid, "notes.json") or {}
+            current["reviewItems"] = [r for r in current.get("reviewItems", []) if r["question"] not in confirmed]
+            self.store.write_json(mid, "notes.json", current)
+        if answers:
             self.store.update(mid, status="done", progress="")
             self.store.rename_folder(mid)
-        except Exception as e:  # noqa: BLE001
-            self.store.update(mid, status="done", progress="", error=f"修正失敗：{e}")
-            raise

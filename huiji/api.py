@@ -295,8 +295,8 @@ class Api:
     def cancel(self, mid: str) -> None:
         self._jobs.cancel(mid)
 
-    def answer_review(self, mid: str, answers: list[dict]) -> None:
-        self._jobs.revise(mid, answers)
+    def answer_review(self, mid: str, answers: list[dict], confirmed: list[str] | None = None) -> None:
+        self._jobs.revise(mid, answers, confirmed)
 
     # ---- 匯出 ----
     def export(self, mid: str, kind: str) -> str | None:
@@ -362,6 +362,7 @@ class Api:
     # ---- 設定 ----
     def get_settings(self) -> dict:
         return {"settings": asdict(self._settings), "devices": recorder.list_devices(), "version": __version__,
+                "default_models": notes.default_models(), "claude_models": notes.CLAUDE_MODELS,
                 "monitors": screen.list_monitors(), "screen_source_name": screen.describe(self._settings.screen_source),
                 "backends": notes.available_backends()}
 

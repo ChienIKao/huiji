@@ -278,7 +278,7 @@ function renderContent() {
     return;
   }
 
-  const tools = `<div class="content-tools">${S.editing
+  const tools = `<div class="content-tools">${usageLine(m)}${S.editing
     ? `<button class="link" data-act="cancel-edit">取消</button><button class="link" data-act="save-edit">儲存</button>`
     : `<button class="link" data-act="copy-md">複製 Markdown</button><button class="link" data-act="edit"><span class="ico edit"></span> 編輯</button>`}</div>`;
 
@@ -309,6 +309,19 @@ function renderContent() {
   } else if (S.tab === "review") {
     renderReview();
   }
+}
+
+function usageLine(m) {
+  const log = m.ai_usage || [];
+  if (!log.length) return `<span class="spacer"></span>`;
+  const n = (x) => (x == null ? "?" : Number(x).toLocaleString());
+  const one = (u) => `${u.kind}：${u.model || "未知模型"}・` + (u.input_tokens != null
+    ? `輸入 ${n(u.input_tokens)}／輸出 ${n(u.output_tokens)} tokens`
+    : u.total_tokens != null ? `${n(u.total_tokens)} tokens` : "用量不明");
+  const last = log[log.length - 1];
+  const total = log.reduce((a, u) => a + (u.input_tokens || 0) + (u.output_tokens || 0) + (u.total_tokens || 0), 0);
+  const title = log.map((u) => `${u.at.replace("T", " ")}　${one(u)}`).join("\n") + `\n\n這場會議累計 ${n(total)} tokens`;
+  return `<span class="usage" title="${esc(title)}">${esc(one(last))}</span><span class="spacer"></span>`;
 }
 
 // ---------- 逐字稿 ----------
@@ -389,23 +402,57 @@ function renderReview() {
     return;
   }
   $("#content").innerHTML = `<div class="review">
-    <p class="hint" style="margin-top:18px">逐字稿是語音辨識產生的，AI 不確定的地方列在這裡。回答後按「依回答修正」，AI 會修正整份紀錄。不需要回答的題目可以留空。</p>
-    ${items.map((r, i) => `<div class="review-item"><div class="q">${esc(r.question)}${tsBtn(r.time)}</div>
-      <input data-i="${i}" placeholder="你的回答（留空表示略過）"></div>`).join("")}
-    <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn primary" data-act="answer">依回答修正</button></div></div>`;
+    <div class="review-head">
+      <p class="hint">AI 不確定的地方列在這裡。內容沒錯就按「正確」；要更正的話直接輸入正確的內容。留空的題目會保留到下次。</p>
+      <button class="btn" data-act="review-all-ok">全部正確</button>
+    </div>
+    ${items.map((r, i) => `<div class="review-item" data-i="${i}"><div class="q">${esc(r.question)}${tsBtn(r.time)}</div>
+      <div class="review-answer">
+        <button class="btn ok-btn" data-act="review-ok" data-i="${i}"><span class="ico check"></span>正確</button>
+        <input data-i="${i}" placeholder="或輸入更正的內容，例如：負責人是阿杰">
+      </div></div>`).join("")}
+    <div class="review-foot"><span class="muted" id="reviewSummary"></span><button class="btn primary" data-act="answer">送出</button></div></div>`;
+  updateReviewSummary();
 }
 
-async function submitReview() {
+function reviewState() {
   const items = S.data.notes.reviewItems;
-  const answers = [...document.querySelectorAll(".review-item input")]
-    .map((inp) => ({ ...items[+inp.dataset.i], answer: inp.value.trim() }))
-    .filter((a) => a.answer);
-  if (!answers.length) return toast("請至少回答一題");
+  const confirmed = [], answers = [];
+  for (const el of document.querySelectorAll(".review-item")) {
+    const r = items[+el.dataset.i];
+    const text = el.querySelector("input").value.trim();
+    if (el.classList.contains("confirmed")) confirmed.push(r.question);
+    else if (text) answers.push({ ...r, answer: text });
+  }
+  return { confirmed, answers };
+}
+
+function updateReviewSummary() {
+  const { confirmed, answers } = reviewState();
+  const parts = [];
+  if (confirmed.length) parts.push(`${confirmed.length} 題正確`);
+  if (answers.length) parts.push(`${answers.length} 題要更正（會請 AI 修改紀錄）`);
+  $("#reviewSummary").textContent = parts.join("、");
   const btn = document.querySelector('[data-act="answer"]');
-  btn.disabled = true; btn.textContent = "修正中…";
+  btn.textContent = answers.length ? "送出並修正紀錄" : "送出";
+  btn.disabled = !confirmed.length && !answers.length;
+}
+
+$("#content").addEventListener("input", (e) => {
+  const item = e.target.closest(".review-item");
+  if (!item) return;
+  if (e.target.value.trim()) item.classList.remove("confirmed");
+  updateReviewSummary();
+});
+
+async function submitReview() {
+  const { confirmed, answers } = reviewState();
+  if (!confirmed.length && !answers.length) return;
+  const btn = document.querySelector('[data-act="answer"]');
+  btn.disabled = true; btn.textContent = answers.length ? "AI 修正中…" : "儲存中…";
   try {
-    await call("answer_review", S.selected, answers);
-    toast("已依回答修正");
+    await call("answer_review", S.selected, answers, confirmed);
+    toast(answers.length ? "已依回答修正紀錄" : "已確認");
   } finally {
     await select(S.selected, true);
     loadList();
@@ -459,6 +506,16 @@ $("#content").addEventListener("click", async (e) => {
   else if (act === "cancel-edit") { S.editing = false; renderContent(); }
   else if (act === "save-edit") saveEdits();
   else if (act === "answer") submitReview();
+  else if (act === "review-ok") {
+    const item = e.target.closest(".review-item");
+    item.classList.toggle("confirmed");
+    if (item.classList.contains("confirmed")) item.querySelector("input").value = "";
+    updateReviewSummary();
+  }
+  else if (act === "review-all-ok") {
+    document.querySelectorAll(".review-item").forEach((el) => { el.classList.add("confirmed"); el.querySelector("input").value = ""; });
+    updateReviewSummary();
+  }
   else if (act === "tr-edit") { S.trEditing = true; renderContent(); }
   else if (act === "tr-cancel") { S.trEditing = false; renderContent(); }
   else if (act === "tr-save") saveTranscript();
@@ -948,7 +1005,14 @@ $("#envCheck").addEventListener("click", (e) => {
 $("#settingsBtn").addEventListener("click", () => showSettings());
 async function showSettings(focus) {
   showView("settings");
-  const { settings: s, devices, backends, version, screen_source_name: sourceName } = await api.get_settings();
+  const { settings: s, devices, backends, version, screen_source_name: sourceName,
+          default_models: defaults, claude_models: claudeModels } = await api.get_settings();
+  const modelOptions = s.llm_backend === "claude" ? claudeModels : [["", "預設"]];
+  const defaultName = defaults[s.llm_backend] || "";
+  const isCustom = s.llm_model && !modelOptions.some(([v]) => v === s.llm_model);
+  const modelSelect = `<select id="modelSel" ${s.llm_backend === "none" ? "disabled" : ""}>${modelOptions.map(([v, label]) =>
+    `<option value="${v}" ${!isCustom && v === s.llm_model ? "selected" : ""}>${esc(v ? label : `預設${defaultName ? `（目前是 ${defaultName}）` : ""}`)}</option>`).join("")}
+    <option value="__custom" ${isCustom ? "selected" : ""}>其他（自行輸入模型名稱）</option></select>`;
   const env = await api.check_environment();
   const opt = (list, cur, def) => `<option value="-1">${def}</option>` + list.map((d) => `<option value="${d.index}" ${d.index === cur ? "selected" : ""}>${esc(d.name)}</option>`).join("");
   const sel = (key, options, cur) => `<select data-key="${key}" data-type="${typeof cur === "number" ? "int" : "str"}">${options.map(([v, label]) =>
@@ -968,9 +1032,10 @@ async function showSettings(focus) {
           ["claude", `Claude Code${backends.claude ? "" : "（未安裝）"}`],
           ["codex", `Codex${backends.codex ? "" : "（未安裝）"}`],
           ["none", "不整理，只要逐字稿"]], s.llm_backend)}</div>
-        <div class="field"><label class="lbl">模型</label>${text("llm_model", s.llm_model, "留空用預設模型")}</div>
+        <div class="field"><label class="lbl">模型</label>${modelSelect}
+          <input type="text" id="modelCustom" class="${isCustom ? "" : "hidden"}" style="margin-top:8px" value="${esc(isCustom ? s.llm_model : "")}" placeholder="例如 claude-sonnet-5-5"></div>
       </div>
-      <p class="help">使用你電腦上已經登入的 CLI。只會送出逐字稿文字，不會上傳音檔。</p>
+      <p class="help">使用你電腦上已經登入的 CLI，只會送出逐字稿文字，不會上傳音檔。「預設」就是你平常在 ${s.llm_backend === "codex" ? "Codex" : "Claude Code"} 裡用的模型。實測整理一小時的會議約 2.5 萬 tokens；回答待確認題目時只送相關段落，約 8 千 tokens；勾「正確」完全不用 AI。</p>
       <div class="field"><label class="lbl">詞彙表（一行一個：人名、產品名、專有名詞）</label>
         <textarea data-key="glossary" data-type="list" rows="4" placeholder="例如：&#10;王小明&#10;Breeze ASR&#10;PayLink">${esc((s.glossary || []).join("\n"))}</textarea>
         <p class="help">轉錄時當作提示，AI 整理時也會照這裡的寫法校正。</p></div>
@@ -1019,6 +1084,13 @@ async function showSettings(focus) {
     el?.classList.add("flash");
   }
   $("#openDataDir").onclick = () => api.open_data_dir();
+  const saveModel = async (v) => { await call("save_settings", { llm_model: v }); toast("已儲存", 1200); };
+  $("#modelSel").onchange = (e) => {
+    const custom = e.target.value === "__custom";
+    $("#modelCustom").classList.toggle("hidden", !custom);
+    if (custom) $("#modelCustom").focus(); else saveModel(e.target.value);
+  };
+  $("#modelCustom").onchange = (e) => saveModel(e.target.value.trim());
   $("#setSource").onclick = async () => {
     S.screenSource = s.screen_source;
     const name = await pickSource();
@@ -1036,6 +1108,7 @@ $("#settingsBody").addEventListener("change", async (e) => {
   else if (type === "str") value = value.trim();
   await call("save_settings", { [el.dataset.key]: value });
   toast("已儲存", 1200);
+  if (el.dataset.key === "llm_backend") await call("save_settings", { llm_model: "" });  // 換 AI 時模型改回預設
   if (["whisper_exe", "opencc_exe", "llm_backend"].includes(el.dataset.key)) {
     const y = $("#settingsView").scrollTop;
     await showSettings();

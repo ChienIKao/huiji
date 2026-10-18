@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -64,6 +65,7 @@ SYSTEM_PROMPT = """你是會議紀錄整理者。根據使用者提供的會議�
 
 REVISE_INSTRUCTIONS = """
 請依使用者的回答修正會議紀錄後，回傳完整的會議紀錄：
+- 逐字稿只附上與回答有關的段落；跟回答無關的內容一律照目前的會議紀錄原樣保留，不要改寫。
 - 依回答修正所有相關內容（摘要、決議、待辦、未決問題、議題、自訂段落、標題都要一併檢查），時間點維持不變。
 - 已回答的題目從 reviewItems 移除；目前會議紀錄裡沒被回答的題目原樣保留。
 - 除非回答本身帶出新的疑點，否則不要新增題目。
@@ -112,7 +114,8 @@ def speaker_name(speaker: str | None, names: dict) -> str:
         return speaker
 
 
-def build_prompt(meeting: dict, segments: list[dict], glossary: list[str]) -> str:
+def build_prompt(meeting: dict, segments: list[dict], glossary: list[str],
+                 transcript_label: str = "逐字稿（[時間] 說話者：內容）") -> str:
     t = TEMPLATES.get(meeting.get("template"), TEMPLATES["general"])
     d = date.fromisoformat(meeting["date"])
     lines = [
@@ -134,7 +137,7 @@ def build_prompt(meeting: dict, segments: list[dict], glossary: list[str]) -> st
     if meeting.get("bookmarks"):
         lines += ["", "重點標記：" + "、".join(fmt_time(b["time"]) + (f" {b['label']}" if b.get("label") else "")
                                            for b in meeting["bookmarks"])]
-    lines += ["", "逐字稿（[時間] 說話者：內容）："]
+    lines += ["", f"{transcript_label}："]
     names = meeting.get("speakers", {})
     for seg in segments:
         who = speaker_name(seg.get("speaker"), names)
@@ -142,9 +145,28 @@ def build_prompt(meeting: dict, segments: list[dict], glossary: list[str]) -> st
     return "\n".join(lines)
 
 
+def _seconds(text: str) -> float | None:
+    parts = re.split(r"[:：]", (text or "").strip())
+    if not parts or not all(x.isdigit() for x in parts) or len(parts) > 3:
+        return None
+    total = 0
+    for x in parts:
+        total = total * 60 + int(x)
+    return float(total)
+
+
+def excerpts(segments: list[dict], times: list[str], window: float = 90) -> list[dict]:
+    """只取每個時間點前後 window 秒的逐字稿：修正時不用把整份逐字稿再送一次"""
+    points = [t for t in (_seconds(x) for x in times) if t is not None]
+    if not points:
+        return segments
+    return [seg for seg in segments if any(seg["end"] >= t - window and seg["start"] <= t + window for t in points)]
+
+
 def build_revise_prompt(meeting: dict, segments: list[dict], glossary: list[str], notes: dict,
                         answers: list[dict]) -> str:
-    text = build_prompt(meeting, segments, glossary)
+    related = excerpts(segments, [a["time"] for a in answers])
+    text = build_prompt(meeting, related, glossary, "逐字稿節錄（只列出與回答有關的段落）")
     text += "\n\n目前的會議紀錄（JSON）：\n" + json.dumps(notes, ensure_ascii=False)
     text += "\n\n使用者對待確認題目的回答：\n"
     for i, a in enumerate(answers, 1):
@@ -175,7 +197,28 @@ def _clean_times(notes: dict) -> dict:
     return notes
 
 
-def generate(backend: str, model: str, prompt: str, on_process=None) -> dict:
+CLAUDE_MODELS = [("", "預設"), ("opus", "Opus（最準確）"), ("sonnet", "Sonnet（較快、較省）"),
+                 ("haiku", "Haiku（最快、最省）")]
+
+
+def default_models() -> dict:
+    """claude／codex 沒指定模型時用的是哪個：讀它們自己的設定檔"""
+    out = {"claude": "", "codex": ""}
+    home = Path.home()
+    try:
+        out["claude"] = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8")).get("model", "")
+    except (OSError, ValueError):
+        pass
+    try:
+        m = re.search(r'^\s*model\s*=\s*"([^"]+)"', (home / ".codex" / "config.toml").read_text(encoding="utf-8"), re.M)
+        out["codex"] = m.group(1) if m else ""
+    except OSError:
+        pass
+    return out
+
+
+def generate(backend: str, model: str, prompt: str, on_process=None) -> tuple[dict, dict]:
+    """回傳（會議紀錄, 用量）；用量是 {model, input_tokens, output_tokens, cost_usd}，拿不到的欄位是 None"""
     schema = json.dumps(SCHEMA, ensure_ascii=False)
     # 在空的暫存資料夾執行：不會讀到任何專案的 CLAUDE.md / AGENTS.md
     with tempfile.TemporaryDirectory() as d:
@@ -216,11 +259,25 @@ def generate(backend: str, model: str, prompt: str, on_process=None) -> dict:
             obj = json.loads(line)
             if obj.get("is_error") or obj.get("structured_output") is None:
                 raise NotesError(str(obj.get("result") or stderr)[-600:])
-            return _clean_times(obj["structured_output"])
+            u = obj.get("usage") or {}
+            models = obj.get("modelUsage") or {}
+            used = next(iter(models.values()), {})
+            usage = {
+                "model": used.get("canonicalModel") or next(iter(models), model or None),
+                "input_tokens": (u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
+                + (u.get("cache_read_input_tokens") or 0),
+                "output_tokens": u.get("output_tokens"),
+                "cost_usd": obj.get("total_cost_usd"),
+            }
+            return _clean_times(obj["structured_output"]), usage
 
         if proc.returncode != 0 or not out_file.exists() or not out_file.stat().st_size:
             raise NotesError((stderr or f"codex 沒有回傳結果（結束代碼 {proc.returncode}）")[-600:])
-        return _clean_times(json.loads(out_file.read_text(encoding="utf-8")))
+        m = re.search(r"tokens used[:\s]*([\d,]+)", stderr + stdout, re.I)
+        usage = {"model": model or default_models()["codex"] or None,
+                 "input_tokens": None, "output_tokens": None, "cost_usd": None,
+                 "total_tokens": int(m.group(1).replace(",", "")) if m else None}
+        return _clean_times(json.loads(out_file.read_text(encoding="utf-8"))), usage
 
 
 def available_backends() -> dict:
