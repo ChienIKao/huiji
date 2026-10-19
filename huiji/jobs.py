@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 import traceback
 from datetime import datetime
@@ -24,6 +25,7 @@ class Jobs:
     def enqueue(self, mid: str, retranscribe: bool = False, renotes: bool = False) -> None:
         if retranscribe:
             (self.store.folder(mid) / "transcript.json").unlink(missing_ok=True)
+            (self.store.folder(mid) / "whisper" / "work.srt").unlink(missing_ok=True)
         if retranscribe or renotes:
             (self.store.folder(mid) / "notes.json").unlink(missing_ok=True)
         self.store.update(mid, status="queued", progress="排隊中", error="")
@@ -44,20 +46,42 @@ class Jobs:
             try:
                 self._process(mid)
             except Exception as e:  # noqa: BLE001  要把任何錯誤顯示在介面上
-                if not self.store.folder(mid).exists():
-                    continue
-                if self.cancelled:
-                    self.store.update(mid, status="recorded", progress="", error="已取消")
-                else:
-                    traceback.print_exc()
-                    self.store.update(mid, status="error", progress="", error=str(e))
+                self._print_error(mid)
+                try:
+                    try:
+                        folder = self.store.folder(mid)
+                    except KeyError:
+                        continue
+                    if not folder.exists():
+                        continue
+                    if self.cancelled:
+                        self.store.update(mid, status="recorded", progress="", error="已取消")
+                    else:
+                        self.store.update(mid, status="error", progress="", error=str(e))
+                except Exception:  # noqa: BLE001  錯誤狀態寫不回去也不能中斷佇列
+                    self._print_error(mid)
             finally:
                 self.current, self.proc = None, None
+
+    def _print_error(self, mid: str) -> None:
+        try:
+            print(f"[{datetime.now().isoformat(timespec='seconds')}] 會議 {mid}", file=sys.stderr, flush=True)
+            traceback.print_exc()
+        except Exception:  # noqa: BLE001  紀錄檔無法寫入時仍要保留工作執行緒
+            pass
 
     def _process(self, mid: str) -> None:
         s: Settings = self.settings()
         folder = self.store.folder(mid)
         meeting = self.store.load(mid)
+
+        last_progress = None
+
+        def update_progress(text: str) -> None:
+            nonlocal last_progress
+            if text != last_progress:
+                self.store.update(mid, progress=text)
+                last_progress = text
 
         # 匯入 mkv 等播放器不能播的影片：先轉成 recording.mp4，再刪掉資料夾裡那份複本（使用者的原始檔不動）
         source = next(folder.glob("source.*"), None)
@@ -65,7 +89,7 @@ class Jobs:
             self.store.update(mid, status="transcribing", progress="轉換影片…")
             length = transcribe.probe_duration(s.ffmpeg_exe, source)
             screen.make_playable(s.ffmpeg_exe, source, folder / "recording.mp4", length,
-                                 lambda p: self.store.update(mid, progress=f"轉換影片 {int(p * 100)}%"), self._set_proc)
+                                 lambda p: update_progress(f"轉換影片 {int(p * 100)}%"), self._set_proc)
             source.unlink()
 
         # 有錄螢幕：先把影片片段和混音後的聲音合成 recording.mp4
@@ -86,10 +110,15 @@ class Jobs:
 
             def progress(p: float) -> None:
                 text = "分辨說話者…" if p < 0 else f"轉錄中 {int(p * 100)}%"
-                self.store.update(mid, progress=text)
+                update_progress(text)
 
-            self.store.update(mid, progress="載入模型…")
-            segments = transcribe.transcribe(s, folder, duration, progress, s.glossary, self._set_proc)
+            srt = folder / "whisper" / "work.srt"
+            audio = folder / "audio.m4a"
+            if srt.exists() and audio.exists() and srt.stat().st_mtime > audio.stat().st_mtime:
+                segments = transcribe.segments_from_srt(s, srt)
+            else:
+                self.store.update(mid, progress="載入模型…")
+                segments = transcribe.transcribe(s, folder, duration, progress, s.glossary, self._set_proc)
             self.store.write_json(mid, "transcript.json", segments)
             meeting = self.store.load(mid)
             self._name_self(mid, folder, meeting, segments)
@@ -120,7 +149,7 @@ class Jobs:
         try:
             me = selfvoice.detect_self(folder, segments)
         except Exception:  # noqa: BLE001  判斷不出來就算了，不影響轉錄
-            traceback.print_exc()
+            self._print_error(mid)
             return
         if me and me not in speakers:
             speakers[me] = "我"

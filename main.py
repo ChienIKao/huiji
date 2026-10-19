@@ -1,20 +1,53 @@
+import ctypes
+import faulthandler
 import sys
+from ctypes import wintypes
 
 from huiji import config, server
 from huiji.api import Api
 
+_instance_mutex = None
+
 
 def _redirect_output() -> None:
-    """打包成無主控台的 exe 時沒有 stdout／stderr：改寫到 %APPDATA%/Huiji/huiji.log"""
-    if sys.stdout is None or sys.stderr is None:
+    """打包後一律寫入紀錄，避免無主控台時遺失背景工作的錯誤。"""
+    if getattr(sys, "frozen", False):
         config.APP_DIR.mkdir(parents=True, exist_ok=True)
         log = open(config.APP_DIR / "huiji.log", "a", encoding="utf-8", buffering=1)  # noqa: SIM115
-        sys.stdout = sys.stdout or log
-        sys.stderr = sys.stderr or log
+        sys.stdout = sys.stderr = log
+        faulthandler.enable(log)
+
+
+def _single_instance() -> bool:
+    global _instance_mutex
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.GetLastError.restype = wintypes.DWORD
+    # 保留控制代碼直到程序結束，讓後續啟動仍能辨認既有實例。
+    _instance_mutex = kernel32.CreateMutexW(None, False, "Local\\HuijiSingleInstance")
+    error = kernel32.GetLastError()
+    if not _instance_mutex:
+        raise ctypes.WinError(error)
+    if error != 183:
+        return True
+
+    user32 = ctypes.windll.user32
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.FindWindowW.restype = wintypes.HWND
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    hwnd = user32.FindWindowW(None, "會記 Huiji")
+    if hwnd:
+        user32.ShowWindow(hwnd, 9)
+        user32.SetForegroundWindow(hwnd)
+    return False
 
 
 def main() -> None:
     _redirect_output()
+    if "--dev" not in sys.argv and not _single_instance():
+        return
     api = Api()
 
     if "--dev" in sys.argv:

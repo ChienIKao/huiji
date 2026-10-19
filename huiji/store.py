@@ -19,13 +19,40 @@ import json
 import re
 import shutil
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
 from . import recorder
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 INVALID = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def _read_json(path: Path):
+    with _lock:
+        for attempt in range(20):
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.05)
+
+
+def _write_json(path: Path, data) -> None:
+    with _lock:
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        for attempt in range(20):
+            try:
+                tmp.replace(path)
+                return
+            except PermissionError:
+                # Windows 上其他程序讀檔時可能暫時無法取代，等檔案釋放再試。
+                if attempt == 19:
+                    raise
+                time.sleep(0.05)
 
 
 def folder_name(date: str, title: str) -> str:
@@ -56,7 +83,7 @@ class Store:
     def _external(self) -> list[str]:
         """不在預設資料夾裡的會議（錄音前選了別的位置）"""
         try:
-            return json.loads(self.library_file.read_text(encoding="utf-8")).get("folders", [])
+            return _read_json(self.library_file).get("folders", [])
         except (OSError, ValueError):
             return []
 
@@ -77,7 +104,7 @@ class Store:
         for d in candidates:
             f = d / "meeting.json"
             try:
-                paths[json.loads(f.read_text(encoding="utf-8"))["id"]] = d
+                paths[_read_json(f)["id"]] = d
             except (OSError, ValueError, KeyError):
                 continue
         self._paths = paths
@@ -152,46 +179,43 @@ class Store:
 
     # ---- 讀寫 ----
     def load(self, mid: str) -> dict:
-        return json.loads((self.folder(mid) / "meeting.json").read_text(encoding="utf-8"))
+        with _lock:
+            return _read_json(self.folder(mid) / "meeting.json")
 
     def save(self, meeting: dict) -> None:
         with _lock:
             path = self.folder(meeting["id"]) / "meeting.json"
-            tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(meeting, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(path)
+            _write_json(path, meeting)
 
     def update(self, mid: str, **fields) -> dict:
         with _lock:
             path = self.folder(mid) / "meeting.json"
-            meeting = json.loads(path.read_text(encoding="utf-8"))
+            meeting = _read_json(path)
             meeting.update(fields)
-            tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(meeting, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(path)
+            _write_json(path, meeting)
             return meeting
 
     def read_json(self, mid: str, name: str):
-        path = self.folder(mid) / name
-        if not path.exists():
-            return None
-        return json.loads(path.read_text(encoding="utf-8"))
+        with _lock:
+            path = self.folder(mid) / name
+            if not path.exists():
+                return None
+            return _read_json(path)
 
     def write_json(self, mid: str, name: str, data) -> None:
-        path = self.folder(mid) / name
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        with _lock:
+            _write_json(self.folder(mid) / name, data)
 
     # ---- 列表與搜尋 ----
     def list(self) -> list[dict]:
-        self._scan()
-        meetings = []
-        for mid in self._paths:
-            try:
-                meetings.append(self.load(mid))
-            except (OSError, ValueError, KeyError):
-                continue
+        with _lock:
+            self._scan()
+            meetings = []
+            for mid in self._paths:
+                try:
+                    meetings.append(self.load(mid))
+                except (OSError, ValueError, KeyError):
+                    continue
         meetings.sort(key=lambda m: m["created_at"], reverse=True)
         return meetings
 
@@ -215,7 +239,7 @@ class Store:
         if self.trash.exists():
             for d in self.trash.iterdir():
                 try:
-                    out[json.loads((d / "meeting.json").read_text(encoding="utf-8"))["id"]] = d
+                    out[_read_json(d / "meeting.json")["id"]] = d
                 except (OSError, ValueError, KeyError):
                     continue
         return out
@@ -232,12 +256,12 @@ class Store:
     def trash_list(self) -> list[dict]:
         out = []
         for d in self._trash_folders().values():
-            out.append(json.loads((d / "meeting.json").read_text(encoding="utf-8")))
+            out.append(_read_json(d / "meeting.json"))
         return sorted(out, key=lambda m: m["created_at"], reverse=True)
 
     def restore(self, mid: str) -> None:
         src = self._trash_folders()[mid]
-        meeting = json.loads((src / "meeting.json").read_text(encoding="utf-8"))
+        meeting = _read_json(src / "meeting.json")
         origin = Path(meeting.get("trash_origin") or self.root / src.name)
         if not origin.parent.exists():
             origin = self.root / origin.name

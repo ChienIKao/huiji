@@ -128,6 +128,14 @@ def to_traditional(s: Settings, texts: list[str]) -> list[str]:
     return out if len(out) == len(texts) else texts
 
 
+def segments_from_srt(s: Settings, srt_path: Path) -> list[dict]:
+    segments = merge_segments(parse_srt(srt_path.read_text(encoding="utf-8")))
+    converted = to_traditional(s, [seg["text"] for seg in segments])
+    for seg, text in zip(segments, converted):
+        seg["text"] = fix_punctuation(text)
+    return segments
+
+
 def transcribe(s: Settings, folder: Path, duration: float, on_progress=None, glossary: list[str] | None = None,
                on_process=None) -> list[dict]:
     exe = Path(s.whisper_exe)
@@ -176,11 +184,7 @@ def transcribe(s: Settings, folder: Path, duration: float, on_progress=None, glo
     if proc.returncode != 0 or not srt.exists():
         raise TranscribeError(f"轉錄失敗（結束代碼 {proc.returncode}）：\n" + "\n".join(tail))
 
-    segments = merge_segments(parse_srt(srt.read_text(encoding="utf-8")))
-    converted = to_traditional(s, [seg["text"] for seg in segments])
-    for seg, text in zip(segments, converted):
-        seg["text"] = fix_punctuation(text)
-    return segments
+    return segments_from_srt(s, srt)
 
 
 def fmt_time(seconds: float) -> str:
