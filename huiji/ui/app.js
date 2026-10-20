@@ -185,14 +185,19 @@ function renderDetail(changed) {
   const sideW = localStorage.getItem("size.videoSidebar");
   $("#contentWrap").style.width = videoTab && sideW ? `${sideW}px` : "";
   if (changed) $("#contentWrap").scrollTop = 0;
-  if (isRec) { renderRecPanel(changed); return; }
+  if (isRec) {
+    // 錄音中不需要播放器：把上一場會議的影片停掉、清掉
+    if (S.playerSrc) { audio.pause(); audio.removeAttribute("src"); audio.load(); S.playerSrc = ""; }
+    renderRecPanel(changed);
+    return;
+  }
 
   const review = S.data.notes?.reviewItems?.length || 0;
   for (const b of document.querySelectorAll("#tabs button")) {
     b.classList.toggle("active", b.dataset.tab === S.tab);
     if (b.dataset.tab === "review") b.innerHTML = `待確認${review ? `<span class="badge">${review}</span>` : ""}`;
   }
-  if (changed) setupPlayer();
+  syncPlayer();
   renderMarks();
   renderContent();
 }
@@ -584,9 +589,17 @@ $("#moreBtn").addEventListener("click", (e) => {
 
 // ---------- 播放器 ----------
 const audio = $("#audio");
+// 這場會議應該播哪個檔案（每場錄影的檔名都是 recording.mp4，所以一定要連會議 id 一起比對）
+const mediaUrl = () => (hasMedia() ? `/media/${S.selected}/${S.data.video || "audio.m4a"}` : "");
+function syncPlayer() {
+  const want = mediaUrl();
+  if (S.playerSrc !== want) setupPlayer();
+  else if (S.data.video && S.data.transcript?.length && !audio.querySelector("track")) setupSubtitles();
+}
 function setupPlayer() {
-  if (!hasMedia()) { audio.removeAttribute("src"); return; }
-  audio.src = `/media/${S.selected}/${S.data.video || "audio.m4a"}`;
+  S.playerSrc = mediaUrl();
+  if (!S.playerSrc) { audio.removeAttribute("src"); audio.load(); return; }
+  audio.src = S.playerSrc;
   setupSubtitles();
   audio.playbackRate = +$("#rateSel").value;
   $("#trackFill").style.width = "0";
@@ -822,8 +835,7 @@ async function poll() {
           if (wasBusy && S.data.meeting.status === "done" && S.data.notes && S.tab === "transcript" && !audio.currentTime) S.tab = "summary";
           if (document.activeElement?.closest?.("#content") && view() !== "transcript") renderMeta();
           else renderDetail(false);
-          const want = S.data.video || (S.data.has_audio ? "audio.m4a" : "");
-          if (want && !audio.src.endsWith("/" + want)) setupPlayer();
+          syncPlayer();
         }
       }
     }
