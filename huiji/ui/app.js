@@ -1132,7 +1132,7 @@ async function showSettings(focus) {
     <section class="card" id="set-data"><h3>資料</h3>
       <div class="field"><label class="lbl">會議預設存放的資料夾</label>
         <div class="input-row">${text("data_dir", s.data_dir)}<button class="btn" id="openDataDir">開啟</button></div>
-        <p class="help">每場會議一個資料夾，名稱是「日期 標題」。開始錄音前也可以在首頁改存到其他地方。</p></div>
+        <p class="help">每場會議一個資料夾，名稱是「日期 時間 標題」。開始錄音前也可以在首頁改存到其他地方。</p></div>
       <div class="field">${check("check_updates", s.check_updates, "開啟時檢查 GitHub 上有沒有新版本")}</div>
     </section>`;
 

@@ -55,10 +55,15 @@ def _write_json(path: Path, data) -> None:
                 time.sleep(0.05)
 
 
-def folder_name(date: str, title: str) -> str:
-    # 冒號在資料夾名稱裡不能用，換成全形的（「10:30 會議」→「10：30 會議」），其他不能用的字元換成空白
+def folder_name(created_at: str, title: str) -> str:
+    """「2026-10-20 10-03 標題」：加上時間，同一天的會議在檔案總管裡也好分辨"""
+    stamp = datetime.fromisoformat(created_at).strftime("%Y-%m-%d %H-%M")
+    clock = stamp[11:].replace("-", ":")
+    if title.startswith(clock):  # 還沒取標題的「10:03 會議」，時間不要重複出現
+        title = title[len(clock):]
+    # 冒號在資料夾名稱裡不能用，換成全形的（「Q4: 規劃」→「Q4： 規劃」），其他不能用的字元換成空白
     safe = INVALID.sub(" ", title.replace(":", "：")).strip().rstrip(". ")[:60].strip()
-    return f"{date} {safe}" if safe else date
+    return f"{stamp} {safe}" if safe else stamp
 
 
 def _unique(path: Path) -> Path:
@@ -127,7 +132,7 @@ class Store:
         display = title or now.strftime("%H:%M 會議")
         parent = Path(parent) if parent else self.root
         parent.mkdir(parents=True, exist_ok=True)
-        path = _unique(parent / folder_name(now.strftime("%Y-%m-%d"), display))
+        path = _unique(parent / folder_name(now.isoformat(timespec="seconds"), display))
         path.mkdir()
         self._paths[mid] = path
         if parent != self.root:
@@ -159,7 +164,7 @@ class Store:
             cur = self.folder(mid)
         except (KeyError, OSError, ValueError):
             return False
-        want = folder_name(m["date"], m["title"])
+        want = folder_name(m["created_at"], m["title"])
         if cur.name == want or re.fullmatch(re.escape(want) + r" \(\d+\)", cur.name):
             return True
         new = _unique(cur.parent / want)
