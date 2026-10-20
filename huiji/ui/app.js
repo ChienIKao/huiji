@@ -747,7 +747,8 @@ function updateRecUI() {
   const badge = $("#screenBadge");
   badge.classList.toggle("hidden", !r.screen);
   badge.classList.toggle("bad", r.screen && !r.screen_ok);
-  badge.textContent = r.screen && !r.screen_ok ? "螢幕錄影中斷" : r.paused ? "螢幕錄影已暫停" : "螢幕錄影中";
+  const src = r.screen_name ? `：${r.screen_name}` : "";
+  badge.textContent = r.screen && !r.screen_ok ? `螢幕錄影中斷${src}` : r.paused ? "螢幕錄影已暫停" : `螢幕錄影中${src}`;
   const t = fmt(r.elapsed);
   $("#sideTimer").textContent = t;
   $("#recLive").classList.toggle("paused", r.paused);

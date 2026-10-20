@@ -4,7 +4,9 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 import tempfile
+import time
 from pathlib import Path
 
 from .config import Settings
@@ -56,7 +58,7 @@ def ensure_audio(s: Settings, folder: Path) -> Path:
     else:
         raise TranscribeError("找不到音檔")
     _run([s.ffmpeg_exe, "-y", "-hide_banner", "-loglevel", "error", *src,
-          "-ac", "1", "-c:a", "aac", "-b:a", "96k", str(audio)], "產生音檔")
+          "-ac", "1", "-ar", "48000", "-c:a", "aac", "-b:a", "96k", str(audio)], "產生音檔")
     return audio
 
 
@@ -160,6 +162,7 @@ def transcribe(s: Settings, folder: Path, duration: float, on_progress=None, glo
             args += ["--max_speakers", str(s.max_speakers)]
 
     env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+    started = time.time()
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
                             creationflags=NO_WINDOW, cwd=str(exe.parent))
     if on_process:
@@ -181,8 +184,13 @@ def transcribe(s: Settings, folder: Path, duration: float, on_progress=None, glo
     proc.wait()
     work.unlink(missing_ok=True)
     srt = out_dir / "work.srt"
-    if proc.returncode != 0 or not srt.exists():
+    # Faster-Whisper-XXL 偶爾在寫完字幕、印出 Operation finished 之後結束時才當掉（例如 0xC0000409），
+    # 結果其實是完整的：這次寫出的字幕檔還在就照常使用
+    finished = srt.exists() and srt.stat().st_mtime >= started and any("Operation finished" in x for x in tail)
+    if not finished and (proc.returncode != 0 or not srt.exists()):
         raise TranscribeError(f"轉錄失敗（結束代碼 {proc.returncode}）：\n" + "\n".join(tail))
+    if proc.returncode != 0:
+        print(f"Faster-Whisper-XXL 完成後異常結束（結束代碼 {proc.returncode}），沿用已寫出的字幕", file=sys.stderr)
 
     return segments_from_srt(s, srt)
 

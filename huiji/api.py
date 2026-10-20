@@ -58,7 +58,7 @@ class Api:
         if self._recorder:
             rec = {"id": self._recording_id, "elapsed": self._recorder.elapsed(),
                    "paused": self._recorder.paused, "levels": self._recorder.levels(),
-                   "screen": bool(self._screen),
+                   "screen": bool(self._screen), "screen_name": getattr(self, "_screen_name", ""),
                    "screen_ok": not self._screen or self._recorder.paused or self._screen.running()}
         meter = self._meter.levels() if self._meter else None
         return {"recording": rec, "job": self._jobs.current, "meter": meter, "mini": self._mini is not None}
@@ -144,6 +144,7 @@ class Api:
             shutil.rmtree(folder, ignore_errors=True)
             raise
         self._recorder, self._screen, self._recording_id = rec, scr, meeting["id"]
+        self._screen_name = screen.describe(s.screen_source) if scr else ""
         if scr:
             meeting = self._store.update(meeting["id"], video_segments=scr.segments)
         return meeting
