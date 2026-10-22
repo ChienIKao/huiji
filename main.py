@@ -75,7 +75,9 @@ def main() -> None:
             api._mini.destroy()
 
     window.events.closing += on_closing
-    webview.start(debug="--debug" in sys.argv, private_mode=False)
+    # WebView2 資料夾要自己一個：用 pywebview 預設的資料夾會跟其他 pywebview 程式共用瀏覽器程序，
+    # 套用到對方啟動時的螢幕縮放，畫面會變大、點擊位置也會偏掉
+    webview.start(debug="--debug" in sys.argv, private_mode=False, storage_path=str(config.APP_DIR / "WebView2"))
 
 
 if __name__ == "__main__":
