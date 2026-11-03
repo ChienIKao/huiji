@@ -58,6 +58,7 @@ class Api:
         if self._recorder:
             rec = {"id": self._recording_id, "elapsed": self._recorder.elapsed(),
                    "paused": self._recorder.paused, "levels": self._recorder.levels(),
+                   "enabled": self._recorder.enabled(),
                    "screen": bool(self._screen), "screen_name": getattr(self, "_screen_name", ""),
                    "screen_ok": not self._screen or self._recorder.paused or self._screen.running()}
         meter = self._meter.levels() if self._meter else None
@@ -163,6 +164,13 @@ class Api:
                 self._store.update(self._recording_id, video_segments=self._screen.segments)
             self._recorder.resume()
 
+    def set_audio_enabled(self, kind: str, on: bool) -> dict:
+        """錄音中打開／關掉麥克風（mic）或系統音（system）"""
+        if not self._recorder:
+            return {}
+        self._recorder.set_enabled(kind, bool(on))
+        return self._recorder.enabled()
+
     def add_bookmark(self, label: str = "") -> float:
         if not self._recorder:
             return 0
@@ -226,8 +234,8 @@ class Api:
         if self._mini or not self._url:
             return
         work = webview.screens[0] if webview.screens else None
-        x = (work.width - 400) if work else None
-        self._mini = webview.create_window("會記・錄音中", f"{self._url}?mini=1", js_api=self, width=380, height=60,
+        x = (work.width - 470) if work else None
+        self._mini = webview.create_window("會記・錄音中", f"{self._url}?mini=1", js_api=self, width=450, height=60,
                                            x=x, y=40 if work else None, resizable=False, frameless=True,
                                            easy_drag=True, on_top=True, background_color="#232323")
         self._mini.events.closed += lambda: setattr(self, "_mini", None)

@@ -2,6 +2,9 @@
 
 系統沒有聲音在播放時，WASAPI loopback 不會送任何資料進來，
 所以系統音那一軌依實際經過的時間補靜音，讓兩軌長度和時間點對得上。
+
+錄音中可以像 OBS 一樣隨時關掉／打開麥克風或系統音：關掉的期間不寫資料、之後補成靜音；
+一開始沒選的那一軌，第一次打開時才開啟裝置，前面同樣補成靜音。
 """
 from __future__ import annotations
 
@@ -83,7 +86,7 @@ def list_devices() -> dict:
 
 
 class Recorder:
-    """mode: both | mic | system"""
+    """mode: both | mic | system（一開始要錄哪幾軌）"""
 
     def __init__(self, folder: Path, mode: str = "both", mic_device: int = -1, loopback_device: int = -1):
         self.folder = folder
@@ -94,6 +97,7 @@ class Recorder:
         self.streams = []
         self.mic: Track | None = None
         self.system: Track | None = None
+        self.muted = {"mic": False, "system": False}
         self.lock = threading.Lock()
         self.started_at = 0.0
         self.paused_total = 0.0
@@ -113,17 +117,23 @@ class Recorder:
     # ---- 控制 ----
     def start(self) -> None:
         self.p = _open_pa()
-        wasapi = self.p.get_host_api_info_by_type(pa.paWASAPI)
         if self.mode in ("both", "mic"):
-            info = self.p.get_device_info_by_index(
-                self.mic_device if self.mic_device >= 0 else wasapi["defaultInputDevice"])
-            self.mic = self._open(info, self.folder / "mic.wav", self._on_mic)
+            self.mic = self._open_mic()
         if self.mode in ("both", "system"):
-            info = self._loopback_info(wasapi)
-            self.system = self._open(info, self.folder / "system.wav", self._on_system)
+            self.system = self._open_system()
         self.started_at = time.monotonic()
         for s in self.streams:
             s.start_stream()
+
+    def _open_mic(self) -> Track:
+        wasapi = self.p.get_host_api_info_by_type(pa.paWASAPI)
+        info = self.p.get_device_info_by_index(
+            self.mic_device if self.mic_device >= 0 else wasapi["defaultInputDevice"])
+        return self._open(info, self.folder / "mic.wav", self._on_mic)
+
+    def _open_system(self) -> Track:
+        info = self._loopback_info(self.p.get_host_api_info_by_type(pa.paWASAPI))
+        return self._open(info, self.folder / "system.wav", self._on_system)
 
     def _loopback_info(self, wasapi) -> dict:
         if self.loopback_device >= 0:
@@ -155,6 +165,21 @@ class Recorder:
                 self.paused_total += time.monotonic() - self.paused_at
                 self.paused_at = None
 
+    def set_enabled(self, kind: str, on: bool) -> None:
+        """錄音中打開／關掉麥克風（mic）或系統音（system）"""
+        if kind not in self.muted:
+            raise ValueError(kind)
+        if on and getattr(self, kind) is None:
+            # 一開始沒錄這一軌：現在才開啟裝置（callback 會把前面補成靜音）
+            track = self._open_mic() if kind == "mic" else self._open_system()
+            with self.lock:
+                setattr(self, kind, track)
+                self.muted[kind] = False
+            self.streams[-1].start_stream()
+            return
+        with self.lock:
+            self.muted[kind] = not on
+
     def stop(self) -> float:
         duration = self.elapsed()
         for s in self.streams:
@@ -173,25 +198,32 @@ class Recorder:
         return {"mic": self.mic.level if self.mic else None,
                 "system": self.system.level if self.system else None}
 
+    def enabled(self) -> dict:
+        return {k: getattr(self, k) is not None and not self.muted[k] for k in self.muted}
+
     # ---- 回呼（在 PortAudio 的執行緒） ----
+    def _write(self, kind: str, data, frames) -> None:
+        track = getattr(self, kind)
+        if not track:
+            return
+        if self.paused_at is not None or self.muted[kind]:
+            track.level = 0.0
+            return
+        # 前面沒資料的那段（沒聲音在播放、關掉的期間、中途才打開）補成靜音（容許 0.2 秒的緩衝誤差）
+        expected = int(self.elapsed() * track.rate) - frames
+        if expected - track.frames > track.rate * 0.2:
+            track.pad_to(expected)
+        track.write(data)
+        track.level = _level(data)
+
     def _on_mic(self, data, frames, time_info, status):
         with self.lock:
-            if self.paused_at is None and self.mic:
-                self.mic.write(data)
-                self.mic.level = _level(data)
-            elif self.mic:
-                self.mic.level = 0.0
+            self._write("mic", data, frames)
         return (None, pa.paContinue)
 
     def _on_system(self, data, frames, time_info, status):
         with self.lock:
-            if self.paused_at is None and self.system:
-                # 前面沒聲音的那段補成靜音（容許 0.2 秒的緩衝誤差）
-                expected = int(self.elapsed() * self.system.rate) - frames
-                if expected - self.system.frames > self.system.rate * 0.2:
-                    self.system.pad_to(expected)
-                self.system.write(data)
-                self.system.level = _level(data)
+            self._write("system", data, frames)
         return (None, pa.paContinue)
 
 

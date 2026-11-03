@@ -1,4 +1,4 @@
-"""螢幕錄影：整個螢幕用 ffmpeg gdigrab 擷取，單一視窗用 wincap（PrintWindow）擷取；硬體編碼（NVENC／Quick Sync）優先。
+"""螢幕錄影：整個螢幕與單一視窗都用 wincap 擷取（不用 gdigrab：它會讓滑鼠一直閃）；硬體編碼（NVENC／Quick Sync）優先。
 
 暫停時結束目前的片段、繼續時開新的片段（video_000.mkv、video_001.mkv…），
 錄完後依各片段對應的錄音長度串接，再跟混音後的 audio.m4a 合成 recording.mp4。
@@ -173,8 +173,7 @@ class ScreenRecorder:
             monitors = list_monitors()
             i = source.get("index", 0)
             self.monitor = monitors[i] if 0 <= i < len(monitors) else monitors[0]
-        self.proc: subprocess.Popen | None = None
-        self.window: wincap.WindowRecorder | None = None
+        self.capture: wincap.WindowRecorder | wincap.MonitorRecorder | None = None
         self.segments: list[dict] = []  # [{"file": "video_000.mkv", "duration": 秒}]
         self._segment_start = 0.0
 
@@ -182,43 +181,22 @@ class ScreenRecorder:
         name = f"video_{len(self.segments):03d}.mkv"
         self.segments.append({"file": name, "duration": None})
         self._segment_start = elapsed
+        out, log = self.folder / name, self.folder / "video.log"
         if self.hwnd:
-            self.window = wincap.WindowRecorder(self.ffmpeg, self.hwnd, self.fps, self.encoder,
-                                                self.folder / name, self.folder / "video.log")
-            _kill_with_parent(self.window.proc)
-            return
-        m = self.monitor
-        args = [self.ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-                "-f", "gdigrab", "-framerate", str(self.fps), "-draw_mouse", "1",
-                "-offset_x", str(m["x"]), "-offset_y", str(m["y"]),
-                "-video_size", f"{m['width']}x{m['height']}", "-i", "desktop",
-                "-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2", *self.encoder, "-pix_fmt", "yuv420p",
-                str(self.folder / name)]
-        with open(self.folder / "video.log", "ab") as log:
-            self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log,
-                                         creationflags=NO_WINDOW)
-        _kill_with_parent(self.proc)
+            self.capture = wincap.WindowRecorder(self.ffmpeg, self.hwnd, self.fps, self.encoder, out, log)
+        else:
+            self.capture = wincap.MonitorRecorder(self.ffmpeg, self.monitor, self.fps, self.encoder, out, log)
+        _kill_with_parent(self.capture.proc)
 
     def stop_segment(self, elapsed: float) -> None:
-        if self.window:
-            self.window.stop()
-            self.window = None
-            self.segments[-1]["duration"] = round(elapsed - self._segment_start, 3)
+        if not self.capture:
             return
-        if not self.proc:
-            return
-        proc, self.proc = self.proc, None
-        try:
-            proc.communicate(b"q", timeout=15)  # 讓 ffmpeg 正常收尾，檔案才完整
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+        self.capture.stop()
+        self.capture = None
         self.segments[-1]["duration"] = round(elapsed - self._segment_start, 3)
 
     def running(self) -> bool:
-        if self.window:
-            return self.window.running()
-        return self.proc is not None and self.proc.poll() is None
+        return self.capture is not None and self.capture.running()
 
 
 # ---- 匯入的影片轉成播放器能播的 mp4 ----

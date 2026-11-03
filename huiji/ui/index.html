@@ -117,8 +117,8 @@
           <span class="timer" id="recTimer">00:00</span>
           <span class="screen-badge hidden" id="screenBadge">螢幕錄影中</span>
           <div class="meters">
-            <div class="meter-row" id="micMeterRow"><span class="ico mic"></span><div class="meter" id="micMeter"></div></div>
-            <div class="meter-row" id="sysMeterRow"><span class="ico speaker"></span><div class="meter" id="sysMeter"></div></div>
+            <div class="meter-row" id="micMeterRow"><button class="audio-toggle" data-kind="mic"><span class="ico mic"></span></button><div class="meter" id="micMeter"></div></div>
+            <div class="meter-row" id="sysMeterRow"><button class="audio-toggle" data-kind="system"><span class="ico speaker"></span></button><div class="meter" id="sysMeter"></div></div>
           </div>
           <div class="spacer"></div>
           <button class="btn" id="pauseBtn"></button>
@@ -186,6 +186,8 @@
   <span class="mini-timer" id="miniTimer">00:00</span>
   <div class="meter" id="miniMeter"></div>
   <div class="spacer"></div>
+  <button class="audio-toggle" data-kind="mic"><span class="ico mic"></span></button>
+  <button class="audio-toggle" data-kind="system"><span class="ico speaker"></span></button>
   <button class="icon-btn" id="miniPause" title="暫停／繼續"></button>
   <button class="icon-btn" id="miniMark" title="標記重點"></button>
   <button class="icon-btn" id="miniStop" title="停止並轉錄"></button>

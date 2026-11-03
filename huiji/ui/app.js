@@ -731,9 +731,6 @@ $("#markBtn").addEventListener("click", addMark);
 
 let recNotesLoaded = null;
 function renderRecPanel(changed) {
-  const mode = S.data.meeting.mode;
-  $("#micMeterRow").classList.toggle("hidden", mode === "system");
-  $("#sysMeterRow").classList.toggle("hidden", mode === "mic");
   for (const id of ["#micMeter", "#sysMeter"])
     if (!$(id).children.length) $(id).innerHTML = "<i></i>".repeat(16);
   if (recNotesLoaded !== S.data.meeting.id) {
@@ -772,7 +769,26 @@ function updateRecUI() {
   $("#pauseBtn").innerHTML = r.paused ? `<span class="ico play"></span>繼續` : `<span class="ico pause"></span>暫停`;
   setMeter("#micMeter", r.levels?.mic);
   setMeter("#sysMeter", r.levels?.system);
+  updateAudioToggles(r);
 }
+// 錄音中隨時打開／關掉麥克風、電腦聲音（像 OBS 的靜音鈕）
+const AUDIO_NAMES = { mic: "麥克風", system: "電腦聲音" };
+function updateAudioToggles(r) {
+  for (const b of document.querySelectorAll(".audio-toggle")) {
+    const on = !!r.enabled?.[b.dataset.kind];
+    b.classList.toggle("off", !on);
+    b.closest(".meter-row")?.classList.toggle("off", !on);
+    b.title = `${AUDIO_NAMES[b.dataset.kind]}：${on ? "錄音中，按一下關掉" : "已關掉，按一下打開"}`;
+  }
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest(".audio-toggle");
+  if (!b || !S.recording) return;
+  const kind = b.dataset.kind, on = !S.recording.enabled?.[kind];
+  S.recording.enabled = await call("set_audio_enabled", kind, on);
+  updateAudioToggles(S.recording);
+  toast(`${AUDIO_NAMES[kind]}${on ? "已打開" : "已關掉，這段時間會錄成靜音"}`, 1600);
+});
 function setMeter(sel, level) {
   const bars = $(sel).children;
   const on = Math.round((level || 0) * bars.length);
@@ -1420,11 +1436,13 @@ async function initMini() {
     const st = await api.state();
     const r = st.recording;
     if (!r) return;
+    S.recording = r;
     paused = r.paused;
     $("#miniTimer").textContent = fmt(r.elapsed);
     $("#mini").classList.toggle("paused", r.paused);
     $("#miniPause").classList.toggle("is-paused", r.paused);
     setMeter("#miniMeter", Math.max(r.levels?.mic || 0, r.levels?.system || 0));
+    updateAudioToggles(r);
   };
   $("#miniPause").onclick = async () => { await api[paused ? "resume_recording" : "pause_recording"](); tickMini(); };
   $("#miniMark").onclick = async () => {
