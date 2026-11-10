@@ -155,7 +155,8 @@ def transcribe(s: Settings, folder: Path, duration: float, on_progress=None, glo
     if glossary:
         args += ["--initial_prompt", "、".join(glossary)]
     if s.diarize:
-        args += ["--diarize", "pyannote_v3.1"]
+        args += ["--diarize", "pyannote_v3.1", "--return_embeddings"]
+        _clear_embeddings(folder, out_dir)
         if s.min_speakers:
             args += ["--min_speakers", str(s.min_speakers)]
         if s.max_speakers:
@@ -191,8 +192,45 @@ def transcribe(s: Settings, folder: Path, duration: float, on_progress=None, glo
         raise TranscribeError(f"轉錄失敗（結束代碼 {proc.returncode}）：\n" + "\n".join(tail))
     if proc.returncode != 0:
         print(f"Faster-Whisper-XXL 完成後異常結束（結束代碼 {proc.returncode}），沿用已寫出的字幕", file=sys.stderr)
-
+    if s.diarize:
+        merge_speakers(folder, srt)
     return segments_from_srt(s, srt)
+
+
+def _embedding_files(folder: Path, out_dir: Path) -> list[Path]:
+    return [f for d in (out_dir, folder) for f in d.glob("work*_SPEAKER_*.txt")]
+
+
+def _clear_embeddings(folder: Path, out_dir: Path) -> None:
+    for f in _embedding_files(folder, out_dir):
+        f.unlink(missing_ok=True)
+
+
+def merge_speakers(folder: Path, srt: Path) -> None:
+    """用聲紋把被拆成好幾個說話者的同一個人併回來，直接改寫 work.srt；失敗就維持原本的分群"""
+    from . import selfvoice, speakers
+
+    out_dir = srt.parent
+    try:
+        files = _embedding_files(folder, out_dir)
+        embeddings: dict = {}
+        for d in {f.parent for f in files}:
+            embeddings.update(speakers.load_embeddings(d, "work*_SPEAKER_*.txt"))
+        if not embeddings:
+            return
+        text = srt.read_text(encoding="utf-8")
+        segments = parse_srt(text)
+        shares = None
+        mic, system = folder / "mic.wav", folder / "system.wav"
+        if mic.exists() and system.exists() and mic.stat().st_size > 44 and system.stat().st_size > 44:
+            shares = {k: v[0] for k, v in selfvoice.mic_shares(mic, system, segments).items()}
+        mapping = speakers.merge_map(segments, embeddings, shares)
+        srt.write_text(speakers.relabel_srt(text, mapping), encoding="utf-8")
+        for f in files:
+            if f.parent != out_dir:
+                f.replace(out_dir / f.name)
+    except Exception as e:  # noqa: BLE001  合併失敗不影響轉錄結果
+        print(f"合併說話者失敗：{e!r}", file=sys.stderr)
 
 
 def fmt_time(seconds: float) -> str:
@@ -250,19 +288,13 @@ def subtitle_segments(s: Settings, folder: Path, fallback: list[dict], edited: b
     return segments
 
 
-def to_vtt(segments: list[dict], speakers: dict) -> str:
-    """影片播放時的字幕（WebVTT）：說話者換人時才加名字，看起來比較清爽"""
-    from .notes import speaker_name
-
+def to_vtt(segments: list[dict]) -> str:
+    """影片播放時的字幕（WebVTT）：只放講話內容，不加說話者名稱，字幕才不會太長"""
     blocks = ["WEBVTT", ""]
-    last = None
     for seg in segments:
-        name = speaker_name(seg.get("speaker"), speakers)
-        text = f"{name}：{seg['text']}" if name and seg.get("speaker") != last else seg["text"]
-        last = seg.get("speaker")
         start = srt_time(seg["start"]).replace(",", ".")
         end = srt_time(max(seg["end"], seg["start"] + 0.5)).replace(",", ".")
-        blocks += [f"{start} --> {end}", text, ""]
+        blocks += [f"{start} --> {end}", seg["text"], ""]
     return "\n".join(blocks)
 
 
