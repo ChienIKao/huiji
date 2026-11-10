@@ -109,7 +109,10 @@ class Jobs:
                 self.store.update(mid, duration=duration)
 
             def progress(p: float) -> None:
-                text = "分辨說話者…" if p < 0 else f"轉錄中 {int(p * 100)}%"
+                if p == -2:
+                    text = "確認短句的說話者…"
+                else:
+                    text = "分辨說話者…" if p < 0 else f"轉錄中 {int(p * 100)}%"
                 update_progress(text)
 
             srt = folder / "whisper" / "work.srt"

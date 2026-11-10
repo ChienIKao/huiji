@@ -144,57 +144,64 @@ def transcribe(s: Settings, folder: Path, duration: float, on_progress=None, glo
     if not exe.exists():
         raise TranscribeError(f"找不到 Faster-Whisper-XXL：{exe}")
     work = prepare_audio(s, folder)
-    out_dir = folder / "whisper"
-    out_dir.mkdir(exist_ok=True)
-    args = [str(exe), str(work), "-m", s.whisper_model, "-o", str(out_dir), "-f", "srt",
-            "--vad_filter", "true", "--condition_on_previous_text", "false", "--beep_off"]
-    if s.whisper_language:
-        args += ["-l", s.whisper_language]
-    if s.multilingual:
-        args += ["--multilingual", "true"]
-    if glossary:
-        args += ["--initial_prompt", "、".join(glossary)]
-    if s.diarize:
-        args += ["--diarize", "pyannote_v3.1", "--return_embeddings"]
-        _clear_embeddings(folder, out_dir)
-        if s.min_speakers:
-            args += ["--min_speakers", str(s.min_speakers)]
-        if s.max_speakers:
-            args += ["--max_speakers", str(s.max_speakers)]
+    try:
+        out_dir = folder / "whisper"
+        out_dir.mkdir(exist_ok=True)
+        args = [str(exe), str(work), "-m", s.whisper_model, "-o", str(out_dir), "-f", "srt",
+                "--vad_filter", "true", "--condition_on_previous_text", "false", "--beep_off"]
+        if s.whisper_language:
+            args += ["-l", s.whisper_language]
+        if s.multilingual:
+            args += ["--multilingual", "true"]
+        if glossary:
+            args += ["--initial_prompt", "、".join(glossary)]
+        if s.diarize:
+            args += ["--diarize", "pyannote_v3.1", "--return_embeddings"]
+            _clear_embeddings(folder, out_dir)
+            if s.min_speakers:
+                args += ["--min_speakers", str(s.min_speakers)]
+            if s.max_speakers:
+                args += ["--max_speakers", str(s.max_speakers)]
 
-    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
-    started = time.time()
-    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
-                            creationflags=NO_WINDOW, cwd=str(exe.parent))
-    if on_process:
-        on_process(proc)
-    tail: list[str] = []
-    assert proc.stdout
-    for raw in proc.stdout:
-        line = raw.decode("utf-8", "replace").rstrip()
-        if not line:
-            continue
-        tail = (tail + [line])[-15:]
-        if on_progress:
-            m = PROGRESS.match(line)
-            if m and duration > 0:
-                end = int(m.group(4) or 0) * 3600 + int(m.group(5)) * 60 + float(m.group(6))
-                on_progress(min(0.99, end / duration))
-            elif "Diariz" in line:
-                on_progress(-1)
-    proc.wait()
-    work.unlink(missing_ok=True)
-    srt = out_dir / "work.srt"
-    # Faster-Whisper-XXL 偶爾在寫完字幕、印出 Operation finished 之後結束時才當掉（例如 0xC0000409），
-    # 結果其實是完整的：這次寫出的字幕檔還在就照常使用
-    finished = srt.exists() and srt.stat().st_mtime >= started and any("Operation finished" in x for x in tail)
-    if not finished and (proc.returncode != 0 or not srt.exists()):
-        raise TranscribeError(f"轉錄失敗（結束代碼 {proc.returncode}）：\n" + "\n".join(tail))
-    if proc.returncode != 0:
-        print(f"Faster-Whisper-XXL 完成後異常結束（結束代碼 {proc.returncode}），沿用已寫出的字幕", file=sys.stderr)
-    if s.diarize:
-        merge_speakers(folder, srt)
-    return segments_from_srt(s, srt)
+        env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+        started = time.time()
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                                creationflags=NO_WINDOW, cwd=str(exe.parent))
+        if on_process:
+            on_process(proc)
+        tail: list[str] = []
+        assert proc.stdout
+        for raw in proc.stdout:
+            line = raw.decode("utf-8", "replace").rstrip()
+            if not line:
+                continue
+            tail = (tail + [line])[-15:]
+            if on_progress:
+                m = PROGRESS.match(line)
+                if m and duration > 0:
+                    end = int(m.group(4) or 0) * 3600 + int(m.group(5)) * 60 + float(m.group(6))
+                    on_progress(min(0.99, end / duration))
+                elif "Diariz" in line:
+                    on_progress(-1)
+        proc.wait()
+        srt = out_dir / "work.srt"
+        # Faster-Whisper-XXL 偶爾在寫完字幕、印出 Operation finished 之後結束時才當掉（例如 0xC0000409），
+        # 結果其實是完整的：這次寫出的字幕檔還在就照常使用
+        finished = srt.exists() and srt.stat().st_mtime >= started and any("Operation finished" in x for x in tail)
+        if not finished and (proc.returncode != 0 or not srt.exists()):
+            raise TranscribeError(f"轉錄失敗（結束代碼 {proc.returncode}）：\n" + "\n".join(tail))
+        if proc.returncode != 0:
+            print(f"Faster-Whisper-XXL 完成後異常結束（結束代碼 {proc.returncode}），沿用已寫出的字幕", file=sys.stderr)
+        if s.diarize:
+            merge_speakers(folder, srt)
+            from .recheck import recheck_speakers
+
+            if on_progress:
+                on_progress(-2)
+            recheck_speakers(folder, srt, work)
+        return segments_from_srt(s, srt)
+    finally:
+        work.unlink(missing_ok=True)
 
 
 def _embedding_files(folder: Path, out_dir: Path) -> list[Path]:

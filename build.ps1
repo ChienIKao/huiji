@@ -14,7 +14,8 @@ $version = (& $python -c "import huiji; print(huiji.__version__)").Trim()
     --noconfirm --clean --windowed --onedir `
     --icon assets\icon.ico `
     --add-data "huiji\ui;huiji\ui" `
-    --collect-all webview
+    --collect-all webview `
+    --collect-all sherpa_onnx
 if ($LASTEXITCODE) { throw "PyInstaller 失敗" }
 
 Copy-Item README.md, LICENSE, THIRD_PARTY_NOTICES.md dist\Huiji\

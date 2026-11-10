@@ -105,7 +105,7 @@ class JobsTests(unittest.TestCase):
                     progress(p)
 
             def transcribe(settings, folder, duration, progress, glossary, on_process):
-                for p in (0.411, 0.412, 0.42, 0.421, -1, -1):
+                for p in (0.411, 0.412, 0.42, 0.421, -1, -1, -2, -2):
                     progress(p)
                 return []
 
@@ -116,7 +116,7 @@ class JobsTests(unittest.TestCase):
                     patch.object(store, "update", wraps=store.update) as update:
                 jobs._process(mid)
             texts = [call.kwargs.get("progress") for call in update.call_args_list]
-            for text in ("轉換影片 41%", "轉換影片 42%", "轉錄中 41%", "轉錄中 42%", "分辨說話者…"):
+            for text in ("轉換影片 41%", "轉換影片 42%", "轉錄中 41%", "轉錄中 42%", "分辨說話者…", "確認短句的說話者…"):
                 self.assertEqual(texts.count(text), 1)
 
     def test_retranscribe_removes_cached_srt(self):
